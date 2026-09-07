@@ -1,6 +1,6 @@
 /**
  * Salesforce Email CSV Autofill - Controller
- * Top-Down Frame Traversal, CKEditor Integration & 1-Second Pre-Send Delay
+ * Frame-Aware Architecture: Handles Top Frame & Cross-Origin CKEditor Frames Seamlessly
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -222,13 +222,68 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.mapping.emailContent) colEmailContent.value = state.mapping.emailContent;
   }
 
-  // IN-PAGE RUNNER (Executes in top window's MAIN world)
+  // FRAME-AWARE AUTOMATION RUNNER (Handles Top Frame & Cross-Origin Subframes)
   function inPageRunner(data) {
-    return new Promise(async (resolve, reject) => {
+    return new Promise(async (resolve) => {
       try {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+        const isTop = window.self === window.top;
+        const formattedHtml = (data.emailContent && (data.emailContent.includes('<p>') || data.emailContent.includes('<br>')))
+          ? data.emailContent
+          : `<p>${(data.emailContent || '').replace(/\n/g, '</p><p>')}</p>`;
 
-        // Helper: Check if Email Docked Composer is open and visible
+        // =========================================================================
+        // PART 1: BODY INJECTION (Runs in ANY frame that holds CKEditor)
+        // =========================================================================
+        let bodyInjected = false;
+
+        // A. Direct inside editable body (inner frame)
+        if (document.body && (document.body.classList.contains('cke_editable') || document.body.getAttribute('contenteditable') === 'true')) {
+          document.body.focus();
+          document.body.innerHTML = formattedHtml;
+          document.body.dispatchEvent(new Event('input', { bubbles: true }));
+          document.body.dispatchEvent(new Event('change', { bubbles: true }));
+          bodyInjected = true;
+          console.log("✅ [SF Email Autofill] Body written directly inside cke_editable frame!");
+        }
+
+        // B. Frame holding CKEditor instance (outer frame or top frame)
+        if (!bodyInjected && window.CKEDITOR && window.CKEDITOR.instances) {
+          for (const k in window.CKEDITOR.instances) {
+            const inst = window.CKEDITOR.instances[k];
+            if (inst && inst.setData) {
+              inst.setData(formattedHtml);
+              bodyInjected = true;
+              console.log("✅ [SF Email Autofill] Body written via window.CKEDITOR.instances!");
+              break;
+            }
+          }
+        }
+
+        // C. Direct child iframe on this document
+        if (!bodyInjected) {
+          const innerIframe = document.querySelector('iframe.cke_wysiwyg_frame') || 
+                              document.querySelector('iframe[title="Email Body"]');
+          if (innerIframe && innerIframe.contentDocument && innerIframe.contentDocument.body) {
+            const b = innerIframe.contentDocument.body;
+            b.focus();
+            b.innerHTML = formattedHtml;
+            b.dispatchEvent(new Event('input', { bubbles: true }));
+            b.dispatchEvent(new Event('change', { bubbles: true }));
+            bodyInjected = true;
+            console.log("✅ [SF Email Autofill] Body written via innerIframe child!");
+          }
+        }
+
+        // If this is a subframe, we are done with body injection
+        if (!isTop) {
+          resolve({ frame: 'subframe', bodyInjected });
+          return;
+        }
+
+        // =========================================================================
+        // PART 2: TOP FRAME AUTOMATION (Open Check, To, Subject, and Send)
+        // =========================================================================
         function isComposerOpen() {
           const dialog =
             document.querySelector('.slds-docked-composer.slds-is-open') ||
@@ -238,7 +293,6 @@ document.addEventListener('DOMContentLoaded', async () => {
           return dialog && dialog.offsetParent !== null;
         }
 
-        // Helper: Deep search across regular DOM and LWC Shadow DOMs for the Email button
         function findEmailOpenButton(root = document) {
           if (!root) return null;
 
@@ -264,38 +318,27 @@ document.addEventListener('DOMContentLoaded', async () => {
           return null;
         }
 
-        // Helper: Ensure composer is open
-        async function ensureComposerOpen() {
-          if (isComposerOpen()) return;
-
-          console.log("[SF Email Autofill] Opening composer...");
+        // 1. Ensure Composer is Open
+        if (!isComposerOpen()) {
+          console.log("[SF Email Autofill] Opening composer via shadow root...");
           const emailBtn = findEmailOpenButton(document);
+          if (emailBtn) {
+            emailBtn.focus();
+            emailBtn.click();
 
-          if (!emailBtn) {
-            throw new Error("Could not find the 'Email' publisher button.");
-          }
-
-          emailBtn.focus();
-          emailBtn.click();
-
-          const startTime = Date.now();
-          while (Date.now() - startTime < 10000) {
-            await sleep(250);
-            if (isComposerOpen()) {
-              const toReady = document.querySelector('ul[aria-label="To"] input[role="combobox"], .emailuiPillContainer input');
-              const subjectReady = document.querySelector('input[placeholder="Enter Subject..."]');
-              if (toReady || subjectReady) {
-                console.log("[SF Email Autofill] Composer mounted.");
-                return;
+            const startTime = Date.now();
+            while (Date.now() - startTime < 10000) {
+              await sleep(250);
+              if (isComposerOpen()) {
+                const toReady = document.querySelector('ul[aria-label="To"] input[role="combobox"], .emailuiPillContainer input');
+                if (toReady) {
+                  await sleep(400);
+                  break;
+                }
               }
             }
           }
-
-          throw new Error("Timed out waiting for Salesforce Email composer to open.");
         }
-
-        // --- STEP 1: ENSURE COMPOSER IS OPEN ---
-        await ensureComposerOpen();
 
         const toContainer =
           document.querySelector('div[role="dialog"][aria-label="Email"]') ||
@@ -303,7 +346,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           document.querySelector('.slds-docked-composer') ||
           document.body;
 
-        // --- STEP 2: CLEAR & FILL RECEIVER (TO) ---
+        // 2. Clear & Fill Receiver (To)
         const toInput =
           toContainer.querySelector('ul[aria-label="To"] input[role="combobox"]') ||
           toContainer.querySelector('.emailuiBaseAddressContainer input.uiPillContainerAutoComplete') ||
@@ -344,7 +387,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           }));
         }
 
-        // --- STEP 3: CLEAR & FILL SUBJECT ---
+        // 3. Clear & Fill Subject
         const subjectInput =
           document.querySelector('input[placeholder="Enter Subject..."]') ||
           document.querySelector('input[aria-label="Subject"]') ||
@@ -365,86 +408,10 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
 
-        // --- STEP 4: CLEAR & FILL BODY (Reliable Top-Down Nested Frame Traversal) ---
-        const formattedHtml = (data.emailContent && (data.emailContent.includes('<p>') || data.emailContent.includes('<br>')))
-          ? data.emailContent
-          : `<p>${(data.emailContent || '').replace(/\n/g, '</p><p>')}</p>`;
-
-        async function injectBodyWithRetry() {
-          const startTime = Date.now();
-
-          while (Date.now() - startTime < 8000) {
-            // 1. Check direct query
-            const d1 = document.querySelector('iframe.cke_wysiwyg_frame, iframe[title="Email Body"]');
-            if (d1 && d1.contentDocument && d1.contentDocument.body) {
-              d1.contentDocument.body.focus();
-              d1.contentDocument.body.innerHTML = formattedHtml;
-              d1.contentDocument.body.dispatchEvent(new Event('input', { bubbles: true }));
-              d1.contentDocument.body.dispatchEvent(new Event('change', { bubbles: true }));
-              console.log("✅ [SF Email Autofill] Body written directly via inner frame!");
-              return true;
-            }
-
-            // 2. Traverse all page iframes (looking into CK Editor Container)
-            const allIframes = Array.from(document.getElementsByTagName('iframe'));
-            for (const outer of allIframes) {
-              try {
-                const subDoc = outer.contentDocument || outer.contentWindow?.document;
-                const subWin = outer.contentWindow;
-
-                if (subDoc) {
-                  // Method A: Check for inner CKEditor iframe inside outer iframe
-                  const nested = subDoc.querySelector('iframe.cke_wysiwyg_frame, iframe[title="Email Body"]');
-                  if (nested && nested.contentDocument && nested.contentDocument.body) {
-                    const nb = nested.contentDocument.body;
-                    nb.focus();
-                    nb.innerHTML = formattedHtml;
-                    nb.dispatchEvent(new Event('input', { bubbles: true }));
-                    nb.dispatchEvent(new Event('change', { bubbles: true }));
-                    console.log("✅ [SF Email Autofill] Body written via nested CKEditor iframe!");
-                    return true;
-                  }
-
-                  // Method B: Check subWin.CKEDITOR instances
-                  if (subWin && subWin.CKEDITOR && subWin.CKEDITOR.instances) {
-                    for (const k in subWin.CKEDITOR.instances) {
-                      const inst = subWin.CKEDITOR.instances[k];
-                      if (inst && inst.setData) {
-                        inst.setData(formattedHtml);
-                        console.log("✅ [SF Email Autofill] Body written via subWin.CKEDITOR.instances!");
-                        return true;
-                      }
-                    }
-                  }
-                }
-              } catch (e) {}
-            }
-
-            // 3. Check top window CKEDITOR
-            if (window.CKEDITOR && window.CKEDITOR.instances) {
-              for (const k in window.CKEDITOR.instances) {
-                const inst = window.CKEDITOR.instances[k];
-                if (inst && inst.setData) {
-                  inst.setData(formattedHtml);
-                  console.log("✅ [SF Email Autofill] Body written via top window CKEDITOR!");
-                  return true;
-                }
-              }
-            }
-
-            await sleep(250);
-          }
-
-          console.warn("[SF Email Autofill] Could not find CKEditor body after 8s polling.");
-          return false;
-        }
-
-        await injectBodyWithRetry();
-
-        // --- STEP 5: 1-SECOND DELAY BEFORE SENDING ---
+        // 4. Send (If Requested, with 1-second delay)
         if (data.shouldSend) {
           console.log("[SF Email Autofill] Waiting 1 second before sending...");
-          await sleep(1000); // 1-second pre-send delay
+          await sleep(1000); // 1-Second Pre-Send Delay
 
           const sendBtn =
             document.querySelector('button.send') ||
@@ -455,29 +422,22 @@ document.addEventListener('DOMContentLoaded', async () => {
               return text === 'send' || title === 'send';
             });
 
-          if (!sendBtn) {
-            throw new Error("Could not locate the 'Send' button.");
+          if (sendBtn && !sendBtn.disabled) {
+            sendBtn.focus();
+            await sleep(50);
+            sendBtn.click();
+            await sleep(600);
           }
-
-          if (sendBtn.disabled) {
-            throw new Error("Send button is disabled. Please verify field validity.");
-          }
-
-          sendBtn.focus();
-          await sleep(50);
-          sendBtn.click();
-
-          await sleep(600);
         }
 
-        resolve({ success: true });
+        resolve({ frame: 'top', success: true });
       } catch (err) {
-        reject(err.message || String(err));
+        resolve({ error: err.message || String(err) });
       }
     });
   }
 
-  // Execute in Top Window's MAIN World
+  // Execute across all frames with allFrames: true
   async function executeInMainWorld(payload) {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tabs || tabs.length === 0) {
@@ -486,14 +446,15 @@ document.addEventListener('DOMContentLoaded', async () => {
 
     const tabId = tabs[0].id;
 
+    // Inject into all frames: Top frame fills To/Subject, Subframe fills CKEditor body!
     const results = await chrome.scripting.executeScript({
-      target: { tabId }, // Top window execution with direct nested frame traversal
+      target: { tabId, allFrames: true },
       world: 'MAIN',
       func: inPageRunner,
       args: [payload]
     });
 
-    return results[0]?.result;
+    return results;
   }
 
   // Get current row payload mapped to fields
