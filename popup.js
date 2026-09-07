@@ -1,6 +1,6 @@
 /**
  * Salesforce Email CSV Autofill - Controller
- * Verified 2-Phase Dispatcher: Guaranteed CKEditor Mount Verification Before Sending
+ * Verified 2-Phase Dispatcher with Full Aura Pill State Sync & Blur Dispatch
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -237,7 +237,6 @@ document.addEventListener('DOMContentLoaded', async () => {
         // =========================================================================
         let bodyInjected = false;
 
-        // Try Method A: Inside editable body (inner iframe)
         if (document.body && (document.body.classList.contains('cke_editable') || document.body.getAttribute('contenteditable') === 'true')) {
           document.body.focus();
           document.body.innerHTML = formattedHtml;
@@ -246,7 +245,6 @@ document.addEventListener('DOMContentLoaded', async () => {
           bodyInjected = true;
         }
 
-        // Try Method B: CKEDITOR global instance
         if (!bodyInjected && window.CKEDITOR && window.CKEDITOR.instances) {
           for (const k in window.CKEDITOR.instances) {
             const inst = window.CKEDITOR.instances[k];
@@ -258,7 +256,6 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
 
-        // Try Method C: Direct child iframe
         if (!bodyInjected) {
           const innerIframe = document.querySelector('iframe.cke_wysiwyg_frame') || 
                               document.querySelector('iframe[title="Email Body"]');
@@ -342,7 +339,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           document.querySelector('.slds-docked-composer') ||
           document.body;
 
-        // Clear & Fill Receiver (To)
+        // Clear & Fill Receiver (To) with Full Aura Pill State Sync
         const toInput =
           toContainer.querySelector('ul[aria-label="To"] input[role="combobox"]') ||
           toContainer.querySelector('.emailuiBaseAddressContainer input.uiPillContainerAutoComplete') ||
@@ -375,12 +372,28 @@ document.addEventListener('DOMContentLoaded', async () => {
           toInput.dispatchEvent(new Event('change', { bubbles: true }));
           await sleep(40);
 
+          // 1. Send Enter key to create pill
           toInput.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
           }));
           toInput.dispatchEvent(new KeyboardEvent('keyup', {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
           }));
+
+          // 2. Also send Comma (alternative commit key in Aura)
+          toInput.dispatchEvent(new KeyboardEvent('keydown', {
+            key: ',', code: 'Comma', keyCode: 188, which: 188, bubbles: true, cancelable: true
+          }));
+          toInput.dispatchEvent(new KeyboardEvent('keyup', {
+            key: ',', code: 'Comma', keyCode: 188, which: 188, bubbles: true, cancelable: true
+          }));
+
+          await sleep(60);
+
+          // 3. Crucial: Blur to commit Aura component attributes
+          toInput.blur();
+          toInput.dispatchEvent(new Event('blur', { bubbles: true }));
+          toInput.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
         }
 
         // Clear & Fill Subject
@@ -391,12 +404,12 @@ document.addEventListener('DOMContentLoaded', async () => {
           document.querySelector('.slds-form-element input.slds-input[placeholder*="Subject"]');
 
         if (subjectInput) {
+          subjectInput.focus(); // Focusing subject additionally blurs the To input
           subjectInput.value = '';
           subjectInput.dispatchEvent(new Event('input', { bubbles: true }));
           subjectInput.dispatchEvent(new Event('change', { bubbles: true }));
 
           if (data.emailSubject !== undefined && data.emailSubject !== null) {
-            subjectInput.focus();
             await sleep(40);
             subjectInput.value = data.emailSubject;
             subjectInput.dispatchEvent(new Event('input', { bubbles: true }));
@@ -404,7 +417,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
 
-        // Only Top Frame clicks Send if data.doSendNow is explicitly true
+        // Send (If Explicitly Requested)
         if (data.doSendNow) {
           const sendBtn =
             document.querySelector('button.send') ||
@@ -445,7 +458,6 @@ document.addEventListener('DOMContentLoaded', async () => {
     const startPoll = Date.now();
 
     while (Date.now() - startPoll < 10000) {
-      // Execute across all frames without sending yet (doSendNow: false)
       const results = await chrome.scripting.executeScript({
         target: { tabId, allFrames: true },
         world: 'MAIN',
@@ -453,14 +465,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         args: [{ ...payload, doSendNow: false }]
       });
 
-      // Check if any subframe or top frame confirmed bodyInjected === true
       if (results && results.some((r) => r.result?.bodyInjected === true)) {
         bodyConfirmed = true;
         console.log("✅ [Verified Dispatcher] CKEditor Body injection confirmed by subframe!");
         break;
       }
 
-      await sleep(350); // Wait 350ms for Visualforce iframe to finish loading and retry
+      await sleep(350);
     }
 
     if (!bodyConfirmed) {
@@ -472,9 +483,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       console.log("⏳ [Verified Dispatcher] Waiting 1-second pre-send delay...");
       await sleep(1000); // 1-Second Pre-Send Delay
 
-      // Trigger Send only in Top Frame
       await chrome.scripting.executeScript({
-        target: { tabId }, // Top frame only
+        target: { tabId },
         world: 'MAIN',
         func: inPageRunner,
         args: [{ ...payload, doSendNow: true }]
