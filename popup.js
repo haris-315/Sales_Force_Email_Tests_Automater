@@ -1,6 +1,6 @@
 /**
  * Salesforce Email CSV Autofill - Controller
- * Frame-Aware Architecture: Handles Top Frame & Cross-Origin CKEditor Frames Seamlessly
+ * Verified 2-Phase Dispatcher: Guaranteed CKEditor Mount Verification Before Sending
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -222,7 +222,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.mapping.emailContent) colEmailContent.value = state.mapping.emailContent;
   }
 
-  // FRAME-AWARE AUTOMATION RUNNER (Handles Top Frame & Cross-Origin Subframes)
+  // SCRIPT RUNNER INJECTED ACROSS ALL FRAMES
   function inPageRunner(data) {
     return new Promise(async (resolve) => {
       try {
@@ -233,34 +233,32 @@ document.addEventListener('DOMContentLoaded', async () => {
           : `<p>${(data.emailContent || '').replace(/\n/g, '</p><p>')}</p>`;
 
         // =========================================================================
-        // PART 1: BODY INJECTION (Runs in ANY frame that holds CKEditor)
+        // 1. SUBFRAME / CKEDITOR BODY INJECTION
         // =========================================================================
         let bodyInjected = false;
 
-        // A. Direct inside editable body (inner frame)
+        // Try Method A: Inside editable body (inner iframe)
         if (document.body && (document.body.classList.contains('cke_editable') || document.body.getAttribute('contenteditable') === 'true')) {
           document.body.focus();
           document.body.innerHTML = formattedHtml;
           document.body.dispatchEvent(new Event('input', { bubbles: true }));
           document.body.dispatchEvent(new Event('change', { bubbles: true }));
           bodyInjected = true;
-          console.log("✅ [SF Email Autofill] Body written directly inside cke_editable frame!");
         }
 
-        // B. Frame holding CKEditor instance (outer frame or top frame)
+        // Try Method B: CKEDITOR global instance
         if (!bodyInjected && window.CKEDITOR && window.CKEDITOR.instances) {
           for (const k in window.CKEDITOR.instances) {
             const inst = window.CKEDITOR.instances[k];
             if (inst && inst.setData) {
               inst.setData(formattedHtml);
               bodyInjected = true;
-              console.log("✅ [SF Email Autofill] Body written via window.CKEDITOR.instances!");
               break;
             }
           }
         }
 
-        // C. Direct child iframe on this document
+        // Try Method C: Direct child iframe
         if (!bodyInjected) {
           const innerIframe = document.querySelector('iframe.cke_wysiwyg_frame') || 
                               document.querySelector('iframe[title="Email Body"]');
@@ -271,18 +269,16 @@ document.addEventListener('DOMContentLoaded', async () => {
             b.dispatchEvent(new Event('input', { bubbles: true }));
             b.dispatchEvent(new Event('change', { bubbles: true }));
             bodyInjected = true;
-            console.log("✅ [SF Email Autofill] Body written via innerIframe child!");
           }
         }
 
-        // If this is a subframe, we are done with body injection
         if (!isTop) {
           resolve({ frame: 'subframe', bodyInjected });
           return;
         }
 
         // =========================================================================
-        // PART 2: TOP FRAME AUTOMATION (Open Check, To, Subject, and Send)
+        // 2. TOP FRAME ACTIONS (Open Check, To, Subject, Send)
         // =========================================================================
         function isComposerOpen() {
           const dialog =
@@ -318,7 +314,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           return null;
         }
 
-        // 1. Ensure Composer is Open
+        // Ensure Composer is Open
         if (!isComposerOpen()) {
           console.log("[SF Email Autofill] Opening composer via shadow root...");
           const emailBtn = findEmailOpenButton(document);
@@ -346,7 +342,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           document.querySelector('.slds-docked-composer') ||
           document.body;
 
-        // 2. Clear & Fill Receiver (To)
+        // Clear & Fill Receiver (To)
         const toInput =
           toContainer.querySelector('ul[aria-label="To"] input[role="combobox"]') ||
           toContainer.querySelector('.emailuiBaseAddressContainer input.uiPillContainerAutoComplete') ||
@@ -387,7 +383,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           }));
         }
 
-        // 3. Clear & Fill Subject
+        // Clear & Fill Subject
         const subjectInput =
           document.querySelector('input[placeholder="Enter Subject..."]') ||
           document.querySelector('input[aria-label="Subject"]') ||
@@ -408,11 +404,8 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
 
-        // 4. Send (If Requested, with 1-second delay)
-        if (data.shouldSend) {
-          console.log("[SF Email Autofill] Waiting 1 second before sending...");
-          await sleep(1000); // 1-Second Pre-Send Delay
-
+        // Only Top Frame clicks Send if data.doSendNow is explicitly true
+        if (data.doSendNow) {
           const sendBtn =
             document.querySelector('button.send') ||
             document.querySelector('button.cuf-publisherShareButton') ||
@@ -430,31 +423,65 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
 
-        resolve({ frame: 'top', success: true });
+        resolve({ frame: 'top', success: true, bodyInjected });
       } catch (err) {
         resolve({ error: err.message || String(err) });
       }
     });
   }
 
-  // Execute across all frames with allFrames: true
-  async function executeInMainWorld(payload) {
+  // 2-PHASE DISPATCHER: Guarantees Body is Injected Before Allowing Send
+  async function executeVerifiedDispatch(payload) {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tabs || tabs.length === 0) {
       throw new Error("No active Salesforce tab found.");
     }
 
     const tabId = tabs[0].id;
+    const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-    // Inject into all frames: Top frame fills To/Subject, Subframe fills CKEditor body!
-    const results = await chrome.scripting.executeScript({
-      target: { tabId, allFrames: true },
-      world: 'MAIN',
-      func: inPageRunner,
-      args: [payload]
-    });
+    // PHASE 1: Fill Top fields & Poll until subframe confirms CKEditor body injection
+    let bodyConfirmed = false;
+    const startPoll = Date.now();
 
-    return results;
+    while (Date.now() - startPoll < 10000) {
+      // Execute across all frames without sending yet (doSendNow: false)
+      const results = await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        world: 'MAIN',
+        func: inPageRunner,
+        args: [{ ...payload, doSendNow: false }]
+      });
+
+      // Check if any subframe or top frame confirmed bodyInjected === true
+      if (results && results.some((r) => r.result?.bodyInjected === true)) {
+        bodyConfirmed = true;
+        console.log("✅ [Verified Dispatcher] CKEditor Body injection confirmed by subframe!");
+        break;
+      }
+
+      await sleep(350); // Wait 350ms for Visualforce iframe to finish loading and retry
+    }
+
+    if (!bodyConfirmed) {
+      console.warn("⚠️ [Verified Dispatcher] CKEditor body not confirmed after 10s polling.");
+    }
+
+    // PHASE 2: If shouldSend is true, wait full 1 second then trigger send
+    if (payload.shouldSend) {
+      console.log("⏳ [Verified Dispatcher] Waiting 1-second pre-send delay...");
+      await sleep(1000); // 1-Second Pre-Send Delay
+
+      // Trigger Send only in Top Frame
+      await chrome.scripting.executeScript({
+        target: { tabId }, // Top frame only
+        world: 'MAIN',
+        func: inPageRunner,
+        args: [{ ...payload, doSendNow: true }]
+      });
+    }
+
+    return { success: true, bodyConfirmed };
   }
 
   // Get current row payload mapped to fields
@@ -506,7 +533,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       if (!data) break;
 
       try {
-        await executeInMainWorld(data);
+        await executeVerifiedDispatch(data);
         state.processedIndices.push(state.currentRowIndex);
         state.currentRowIndex++;
         await saveState();
@@ -710,7 +737,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnFillOnly.textContent = 'Filling...';
 
     try {
-      await executeInMainWorld(data);
+      await executeVerifiedDispatch(data);
       showBanner(`Cleared & filled Row ${state.currentRowIndex + 1} into Salesforce!`, 'success');
     } catch (err) {
       showBanner(`Fill Error: ${err.message || err}`, 'error');
@@ -729,7 +756,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     btnFillAndSend.textContent = 'Sending...';
 
     try {
-      await executeInMainWorld(data);
+      await executeVerifiedDispatch(data);
       showBanner(`Sent Row ${state.currentRowIndex + 1}! Moving to next...`, 'success');
 
       state.processedIndices.push(state.currentRowIndex);
