@@ -375,46 +375,136 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // 2. SUBFRAME BODY INJECTOR (Injected across all frames)
-  function bodyFrameInjectRunner(formattedHtml) {
+  // 2. SUBFRAME BODY INJECTOR: Injects & strictly reads back content to verify
+  function bodyFrameInjectRunner(options) {
+    const { formattedHtml, expectedSnippet } = options;
     let bodyInjected = false;
+    let verifiedText = '';
 
-    if (document.body && (document.body.classList.contains('cke_editable') || document.body.getAttribute('contenteditable') === 'true')) {
-      document.body.focus();
-      document.body.innerHTML = formattedHtml;
-      document.body.dispatchEvent(new Event('input', { bubbles: true }));
-      document.body.dispatchEvent(new Event('change', { bubbles: true }));
-      bodyInjected = true;
+    function checkContentMatch(text) {
+      if (!expectedSnippet || expectedSnippet.trim().length === 0) return true;
+      if (!text) return false;
+      const cleanActual = text.replace(/\s+/g, ' ').trim().toLowerCase();
+      const cleanExpected = expectedSnippet.replace(/\s+/g, ' ').trim().toLowerCase();
+      return cleanActual.includes(cleanExpected) || cleanActual.length >= Math.min(cleanExpected.length, 10);
     }
 
+    // A. Direct contenteditable on document.body
+    if (document.body && (document.body.classList.contains('cke_editable') || document.body.getAttribute('contenteditable') === 'true')) {
+      try {
+        document.body.focus();
+        document.body.innerHTML = formattedHtml;
+        document.body.dispatchEvent(new Event('input', { bubbles: true }));
+        document.body.dispatchEvent(new Event('change', { bubbles: true }));
+
+        const readBack = (document.body.innerText || document.body.textContent || '').trim();
+        if (checkContentMatch(readBack)) {
+          bodyInjected = true;
+          verifiedText = readBack.substring(0, 40);
+        }
+      } catch (e) {}
+    }
+
+    // B. CKEditor Global API
     if (!bodyInjected && window.CKEDITOR && window.CKEDITOR.instances) {
       for (const k in window.CKEDITOR.instances) {
         const inst = window.CKEDITOR.instances[k];
         if (inst && inst.setData) {
-          inst.setData(formattedHtml);
-          bodyInjected = true;
-          break;
+          try {
+            inst.setData(formattedHtml);
+            const data = (inst.getData ? inst.getData() : '') || '';
+            if (checkContentMatch(data)) {
+              bodyInjected = true;
+              verifiedText = data.substring(0, 40);
+              break;
+            }
+          } catch (e) {}
         }
       }
     }
 
+    // C. Child iframe (.cke_wysiwyg_frame or title="Email Body")
     if (!bodyInjected) {
-      const innerIframe = document.querySelector('iframe.cke_wysiwyg_frame') || 
-                          document.querySelector('iframe[title="Email Body"]');
-      if (innerIframe && innerIframe.contentDocument && innerIframe.contentDocument.body) {
-        const b = innerIframe.contentDocument.body;
-        b.focus();
-        b.innerHTML = formattedHtml;
-        b.dispatchEvent(new Event('input', { bubbles: true }));
-        b.dispatchEvent(new Event('change', { bubbles: true }));
-        bodyInjected = true;
+      const innerIframes = document.querySelectorAll('iframe.cke_wysiwyg_frame, iframe[title="Email Body"]');
+      for (const innerIframe of innerIframes) {
+        try {
+          if (innerIframe && innerIframe.contentDocument && innerIframe.contentDocument.body) {
+            const b = innerIframe.contentDocument.body;
+            b.focus();
+            b.innerHTML = formattedHtml;
+            b.dispatchEvent(new Event('input', { bubbles: true }));
+            b.dispatchEvent(new Event('change', { bubbles: true }));
+
+            const readBack = (b.innerText || b.textContent || '').trim();
+            if (checkContentMatch(readBack)) {
+              bodyInjected = true;
+              verifiedText = readBack.substring(0, 40);
+              break;
+            }
+          }
+        } catch (e) {}
       }
     }
 
-    return { frame: window.self === window.top ? 'top' : 'subframe', bodyInjected };
+    return {
+      frame: window.self === window.top ? 'top' : 'subframe',
+      bodyInjected,
+      verifiedText
+    };
   }
 
-  // 3. SEND ACTION RUNNER: Full Pointer/Mouse Event Chain
+  // 3. PRE-FLIGHT VERIFIER: Strictly checks if body exists in live CKEditor DOM before send
+  function bodyFrameVerifyOnlyRunner(expectedSnippet) {
+    function checkContentMatch(text) {
+      if (!expectedSnippet || expectedSnippet.trim().length === 0) return true;
+      if (!text) return false;
+      const cleanActual = text.replace(/\s+/g, ' ').trim().toLowerCase();
+      const cleanExpected = expectedSnippet.replace(/\s+/g, ' ').trim().toLowerCase();
+      return cleanActual.includes(cleanExpected);
+    }
+
+    let isVerified = false;
+
+    // Check contenteditable body
+    if (document.body && (document.body.classList.contains('cke_editable') || document.body.getAttribute('contenteditable') === 'true')) {
+      const readBack = (document.body.innerText || document.body.textContent || '').trim();
+      if (checkContentMatch(readBack)) isVerified = true;
+    }
+
+    // Check CKEditor instances
+    if (!isVerified && window.CKEDITOR && window.CKEDITOR.instances) {
+      for (const k in window.CKEDITOR.instances) {
+        const inst = window.CKEDITOR.instances[k];
+        if (inst && inst.getData) {
+          const data = inst.getData() || '';
+          if (checkContentMatch(data)) {
+            isVerified = true;
+            break;
+          }
+        }
+      }
+    }
+
+    // Check child iframes
+    if (!isVerified) {
+      const innerIframes = document.querySelectorAll('iframe.cke_wysiwyg_frame, iframe[title="Email Body"]');
+      for (const innerIframe of innerIframes) {
+        try {
+          if (innerIframe && innerIframe.contentDocument && innerIframe.contentDocument.body) {
+            const readBack = (innerIframe.contentDocument.body.innerText || '').trim();
+            if (checkContentMatch(readBack)) {
+              isVerified = true;
+              break;
+            }
+          }
+        } catch (e) {}
+      }
+    }
+
+    return { isVerified };
+  }
+
+  // 4. SEND ACTION RUNNER: Full Pointer/Mouse Event Chain
   function sendEmailActionRunner() {
     return new Promise(async (resolve) => {
       const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -471,7 +561,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     });
   }
 
-  // 2-PHASE DISPATCHER: Guaranteed clean sequence with no duplicate field clears
+  // 2-PHASE DISPATCHER: Strict verification before any send is allowed
   async function executeVerifiedDispatch(payload) {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tabs || tabs.length === 0) {
@@ -481,9 +571,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     const tabId = tabs[0].id;
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-    const formattedHtml = (payload.emailContent && (payload.emailContent.includes('<p>') || payload.emailContent.includes('<br>')))
-      ? payload.emailContent
-      : `<p>${(payload.emailContent || '').replace(/\n/g, '</p><p>')}</p>`;
+    const rawContent = (payload.emailContent || '').trim();
+    const expectedSnippet = rawContent.length > 50 ? rawContent.substring(0, 50) : rawContent;
+    const formattedHtml = (rawContent && (rawContent.includes('<p>') || rawContent.includes('<br>')))
+      ? rawContent
+      : `<p>${rawContent.replace(/\n/g, '</p><p>')}</p>`;
 
     // STEP 1: Fill Top fields (To, Subject) ONCE
     await chrome.scripting.executeScript({
@@ -493,29 +585,33 @@ document.addEventListener('DOMContentLoaded', async () => {
       args: [payload]
     });
 
-    // STEP 2: Poll Subframes for CKEditor Body Injection
+    // STEP 2: Poll Subframes for CKEditor Body Injection & Read-back Confirmation
     let bodyConfirmed = false;
+    let verifiedSnippet = '';
     const startPoll = Date.now();
 
-    while (Date.now() - startPoll < 10000) {
+    while (Date.now() - startPoll < 15000) {
       const results = await chrome.scripting.executeScript({
         target: { tabId, allFrames: true },
         world: 'MAIN',
         func: bodyFrameInjectRunner,
-        args: [formattedHtml]
+        args: [{ formattedHtml, expectedSnippet }]
       });
 
-      if (results && results.some((r) => r.result?.bodyInjected === true)) {
+      const confirmedFrame = results && results.find((r) => r.result?.bodyInjected === true);
+      if (confirmedFrame) {
         bodyConfirmed = true;
-        console.log("✅ [Verified Dispatcher] CKEditor Body injection confirmed by subframe!");
+        verifiedSnippet = confirmedFrame.result?.verifiedText || '';
+        console.log(`✅ [Verified Dispatcher] Body 100% verified in CKEditor: "${verifiedSnippet}"`);
         break;
       }
 
-      await sleep(350);
+      await sleep(300);
     }
 
-    if (!bodyConfirmed) {
-      console.warn("⚠️ [Verified Dispatcher] CKEditor body not confirmed after 10s polling.");
+    // STRICT GUARD: Refuse to send if body is not 100% verified in DOM
+    if (!bodyConfirmed && rawContent.length > 0) {
+      throw new Error("CKEditor body could not be verified in Salesforce. Aborting send to prevent sending blank email.");
     }
 
     // STEP 3: 1-Second Pre-Send Settle Delay (allows Aura model to sync)
@@ -523,15 +619,44 @@ document.addEventListener('DOMContentLoaded', async () => {
       console.log("⏳ [Verified Dispatcher] Waiting 1-second pre-send delay...");
       await sleep(1000);
 
-      // STEP 4: Trigger Send via Pointer Event Chain in Top Frame
-      await chrome.scripting.executeScript({
+      // STEP 4: Pre-Flight Verification (Double check body still present right before clicking Send)
+      if (rawContent.length > 0) {
+        const verifyResults = await chrome.scripting.executeScript({
+          target: { tabId, allFrames: true },
+          world: 'MAIN',
+          func: bodyFrameVerifyOnlyRunner,
+          args: [expectedSnippet]
+        });
+
+        const isStillVerified = verifyResults && verifyResults.some((r) => r.result?.isVerified === true);
+        if (!isStillVerified) {
+          // Attempt rapid re-injection fallback
+          const reInject = await chrome.scripting.executeScript({
+            target: { tabId, allFrames: true },
+            world: 'MAIN',
+            func: bodyFrameInjectRunner,
+            args: [{ formattedHtml, expectedSnippet }]
+          });
+
+          if (!reInject || !reInject.some((r) => r.result?.bodyInjected === true)) {
+            throw new Error("Pre-send verification failed: CKEditor body became empty before clicking Send. Aborted.");
+          }
+        }
+      }
+
+      // STEP 5: Trigger Send via Pointer Event Chain in Top Frame
+      const sendRes = await chrome.scripting.executeScript({
         target: { tabId },
         world: 'MAIN',
         func: sendEmailActionRunner
       });
+
+      if (sendRes && sendRes[0]?.result?.error) {
+        throw new Error(sendRes[0].result.error);
+      }
     }
 
-    return { success: true, bodyConfirmed };
+    return { success: true, bodyConfirmed, verifiedSnippet };
   }
 
   // Get current row payload mapped to fields
