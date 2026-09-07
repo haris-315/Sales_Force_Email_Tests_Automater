@@ -1,6 +1,6 @@
 /**
  * Salesforce Email CSV Autofill - Controller
- * Full Auto-Loop with Shadow-DOM-Aware Auto-Opening
+ * Full Auto-Loop with CKEditor Readiness Polling & 1-Second Pre-Send Delay
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -272,7 +272,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           const emailBtn = findEmailOpenButton(document);
 
           if (!emailBtn) {
-            throw new Error("Could not find the 'Email' publisher button (piercing shadow roots).");
+            throw new Error("Could not find the 'Email' publisher button.");
           }
 
           emailBtn.focus();
@@ -288,14 +288,94 @@ document.addEventListener('DOMContentLoaded', async () => {
               const subjectReady = document.querySelector('input[placeholder="Enter Subject..."]');
 
               if (toReady || subjectReady) {
-                await sleep(500); // Wait for nested CKEditor iframe to initialize
-                console.log("[SF Email Autofill] Email composer opened and mounted.");
+                console.log("[SF Email Autofill] Email composer opened.");
                 return;
               }
             }
           }
 
           throw new Error("Timed out waiting for Salesforce Email composer to open.");
+        }
+
+        // Helper: Find and write to CKEditor body (with retry polling for newly opened dialogs)
+        async function setCKEditorBody(formattedHtml) {
+          function tryWrite() {
+            // Check direct body inside CKEditor frame
+            if (document.body && (document.body.classList.contains('cke_editable') || document.body.getAttribute('contenteditable') === 'true')) {
+              document.body.focus();
+              document.body.innerHTML = formattedHtml;
+              document.body.dispatchEvent(new Event('input', { bubbles: true }));
+              document.body.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            }
+
+            // Check direct inner iframe
+            const innerIframe = document.querySelector('iframe.cke_wysiwyg_frame') || 
+                                document.querySelector('iframe[title="Email Body"]');
+            if (innerIframe && innerIframe.contentDocument && innerIframe.contentDocument.body) {
+              const b = innerIframe.contentDocument.body;
+              b.focus();
+              b.innerHTML = formattedHtml;
+              b.dispatchEvent(new Event('input', { bubbles: true }));
+              b.dispatchEvent(new Event('change', { bubbles: true }));
+              return true;
+            }
+
+            // Check outer iframe -> inner iframe
+            const allIframes = Array.from(document.querySelectorAll('iframe'));
+            for (const outer of allIframes) {
+              try {
+                const outerDoc = outer.contentDocument || outer.contentWindow?.document;
+                if (outerDoc) {
+                  const ckeBody = outerDoc.querySelector('body.cke_editable, div[contenteditable="true"]');
+                  if (ckeBody) {
+                    ckeBody.focus();
+                    ckeBody.innerHTML = formattedHtml;
+                    ckeBody.dispatchEvent(new Event('input', { bubbles: true }));
+                    ckeBody.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                  }
+
+                  const nestedIframe = outerDoc.querySelector('iframe.cke_wysiwyg_frame') || 
+                                       outerDoc.querySelector('iframe[title="Email Body"]');
+                  if (nestedIframe && nestedIframe.contentDocument && nestedIframe.contentDocument.body) {
+                    const nb = nestedIframe.contentDocument.body;
+                    nb.focus();
+                    nb.innerHTML = formattedHtml;
+                    nb.dispatchEvent(new Event('input', { bubbles: true }));
+                    nb.dispatchEvent(new Event('change', { bubbles: true }));
+                    return true;
+                  }
+                }
+              } catch (e) {}
+            }
+
+            // Check global CKEDITOR instances
+            if (window.CKEDITOR && window.CKEDITOR.instances) {
+              for (const k in window.CKEDITOR.instances) {
+                const inst = window.CKEDITOR.instances[k];
+                if (inst && inst.setData) {
+                  inst.setData(formattedHtml);
+                  return true;
+                }
+              }
+            }
+
+            return false;
+          }
+
+          // Retry loop for up to 6 seconds to allow nested iframe to mount
+          const start = Date.now();
+          while (Date.now() - start < 6000) {
+            if (tryWrite()) {
+              console.log("✅ [SF Email Autofill] Body written successfully into CKEditor.");
+              return true;
+            }
+            await sleep(250);
+          }
+
+          console.warn("[SF Email Autofill] Could not find CKEditor body after waiting.");
+          return false;
         }
 
         // --- STEP 1: ENSURE COMPOSER IS OPEN ---
@@ -331,14 +411,14 @@ document.addEventListener('DOMContentLoaded', async () => {
 
         if (data.receiverEmail && toInput) {
           toInput.focus();
-          await sleep(30);
+          await sleep(40);
           document.execCommand('insertText', false, data.receiverEmail);
           if (toInput.value !== data.receiverEmail) {
             toInput.value = data.receiverEmail;
           }
           toInput.dispatchEvent(new Event('input', { bubbles: true }));
           toInput.dispatchEvent(new Event('change', { bubbles: true }));
-          await sleep(30);
+          await sleep(40);
 
           toInput.dispatchEvent(new KeyboardEvent('keydown', {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
@@ -362,83 +442,24 @@ document.addEventListener('DOMContentLoaded', async () => {
 
           if (data.emailSubject !== undefined && data.emailSubject !== null) {
             subjectInput.focus();
-            await sleep(30);
+            await sleep(40);
             subjectInput.value = data.emailSubject;
             subjectInput.dispatchEvent(new Event('input', { bubbles: true }));
             subjectInput.dispatchEvent(new Event('change', { bubbles: true }));
           }
         }
 
-        // --- STEP 4: CLEAR & FILL BODY (CKEditor Nested Iframes) ---
+        // --- STEP 4: CLEAR & FILL BODY (With Polling) ---
         const formattedHtml = (data.emailContent && (data.emailContent.includes('<p>') || data.emailContent.includes('<br>')))
           ? data.emailContent
           : `<p>${(data.emailContent || '').replace(/\n/g, '</p><p>')}</p>`;
 
-        function writeToBody(bodyElem) {
-          if (!bodyElem) return false;
-          bodyElem.focus();
-          bodyElem.innerHTML = formattedHtml;
-          bodyElem.dispatchEvent(new Event('input', { bubbles: true }));
-          bodyElem.dispatchEvent(new Event('change', { bubbles: true }));
-          return true;
-        }
+        await setCKEditorBody(formattedHtml);
 
-        let bodyWritten = false;
-
-        // Direct inside CKEditor frame
-        if (document.body && (document.body.classList.contains('cke_editable') || document.body.getAttribute('contenteditable') === 'true')) {
-          if (writeToBody(document.body)) bodyWritten = true;
-        }
-
-        // Direct inner iframe
-        if (!bodyWritten) {
-          const innerIframe = document.querySelector('iframe.cke_wysiwyg_frame') || 
-                              document.querySelector('iframe[title="Email Body"]');
-          if (innerIframe && innerIframe.contentDocument && innerIframe.contentDocument.body) {
-            if (writeToBody(innerIframe.contentDocument.body)) bodyWritten = true;
-          }
-        }
-
-        // Outer iframe -> Inner iframe
-        if (!bodyWritten) {
-          const allIframes = Array.from(document.querySelectorAll('iframe'));
-          for (const outer of allIframes) {
-            try {
-              const outerDoc = outer.contentDocument || outer.contentWindow?.document;
-              if (outerDoc) {
-                const ckeBody = outerDoc.querySelector('body.cke_editable, div[contenteditable="true"]');
-                if (ckeBody && writeToBody(ckeBody)) {
-                  bodyWritten = true;
-                  break;
-                }
-                const nestedIframe = outerDoc.querySelector('iframe.cke_wysiwyg_frame') || 
-                                     outerDoc.querySelector('iframe[title="Email Body"]');
-                if (nestedIframe && nestedIframe.contentDocument && nestedIframe.contentDocument.body) {
-                  if (writeToBody(nestedIframe.contentDocument.body)) {
-                    bodyWritten = true;
-                    break;
-                  }
-                }
-              }
-            } catch (e) {}
-          }
-        }
-
-        // CKEDITOR global instance
-        if (!bodyWritten && window.CKEDITOR && window.CKEDITOR.instances) {
-          for (const k in window.CKEDITOR.instances) {
-            const inst = window.CKEDITOR.instances[k];
-            if (inst && inst.setData) {
-              inst.setData(formattedHtml);
-              bodyWritten = true;
-              break;
-            }
-          }
-        }
-
-        // --- STEP 5: SEND (If Requested) ---
+        // --- STEP 5: 1-SECOND SETTLE DELAY BEFORE SENDING ---
         if (data.shouldSend) {
-          await sleep(400);
+          console.log("[SF Email Autofill] Waiting 1 second before clicking Send...");
+          await sleep(1000); // 1-Second Pre-Send Delay as requested
 
           const sendBtn =
             document.querySelector('button.send') ||
