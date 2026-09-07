@@ -222,61 +222,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.mapping.emailContent) colEmailContent.value = state.mapping.emailContent;
   }
 
-  // SCRIPT RUNNER INJECTED ACROSS ALL FRAMES
-  function inPageRunner(data) {
+  // 1. TOP FRAME RUNNER: Ensures modal open, clears & creates To pill, clears & fills Subject
+  function topFrameFillRunner(data) {
     return new Promise(async (resolve) => {
       try {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-        const isTop = window.self === window.top;
-        const formattedHtml = (data.emailContent && (data.emailContent.includes('<p>') || data.emailContent.includes('<br>')))
-          ? data.emailContent
-          : `<p>${(data.emailContent || '').replace(/\n/g, '</p><p>')}</p>`;
 
-        // =========================================================================
-        // 1. SUBFRAME / CKEDITOR BODY INJECTION
-        // =========================================================================
-        let bodyInjected = false;
-
-        if (document.body && (document.body.classList.contains('cke_editable') || document.body.getAttribute('contenteditable') === 'true')) {
-          document.body.focus();
-          document.body.innerHTML = formattedHtml;
-          document.body.dispatchEvent(new Event('input', { bubbles: true }));
-          document.body.dispatchEvent(new Event('change', { bubbles: true }));
-          bodyInjected = true;
-        }
-
-        if (!bodyInjected && window.CKEDITOR && window.CKEDITOR.instances) {
-          for (const k in window.CKEDITOR.instances) {
-            const inst = window.CKEDITOR.instances[k];
-            if (inst && inst.setData) {
-              inst.setData(formattedHtml);
-              bodyInjected = true;
-              break;
-            }
-          }
-        }
-
-        if (!bodyInjected) {
-          const innerIframe = document.querySelector('iframe.cke_wysiwyg_frame') || 
-                              document.querySelector('iframe[title="Email Body"]');
-          if (innerIframe && innerIframe.contentDocument && innerIframe.contentDocument.body) {
-            const b = innerIframe.contentDocument.body;
-            b.focus();
-            b.innerHTML = formattedHtml;
-            b.dispatchEvent(new Event('input', { bubbles: true }));
-            b.dispatchEvent(new Event('change', { bubbles: true }));
-            bodyInjected = true;
-          }
-        }
-
-        if (!isTop) {
-          resolve({ frame: 'subframe', bodyInjected });
-          return;
-        }
-
-        // =========================================================================
-        // 2. TOP FRAME ACTIONS (Open Check, To, Subject, Send)
-        // =========================================================================
         function isComposerOpen() {
           const dialog =
             document.querySelector('.slds-docked-composer.slds-is-open') ||
@@ -311,7 +262,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           return null;
         }
 
-        // Ensure Composer is Open
+        // 1. Ensure Composer Modal is Open
         if (!isComposerOpen()) {
           console.log("[SF Email Autofill] Opening composer via shadow root...");
           const emailBtn = findEmailOpenButton(document);
@@ -339,7 +290,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           document.querySelector('.slds-docked-composer') ||
           document.body;
 
-        // Clear & Fill Receiver (To) with Full Aura Pill State Sync
+        // 2. Clear & Fill Receiver (To)
         const toInput =
           toContainer.querySelector('ul[aria-label="To"] input[role="combobox"]') ||
           toContainer.querySelector('.emailuiBaseAddressContainer input.uiPillContainerAutoComplete') ||
@@ -347,7 +298,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           toContainer.querySelector('input[aria-label="To"]');
 
         const existingPills = toContainer.querySelectorAll(
-          'ul[aria-label="To"] .slds-pill__remove, ul[aria-label="To"] [data-action="delete"]'
+          'ul[aria-label="To"] .slds-pill__remove, ul[aria-label="To"] [data-action="delete"], ul[aria-label="To"] button.slds-pill__remove'
         );
         existingPills.forEach((btn) => { try { btn.click(); } catch (e) {} });
 
@@ -358,45 +309,40 @@ document.addEventListener('DOMContentLoaded', async () => {
         }
 
         if (existingPills.length > 0) {
-          await sleep(120);
+          await sleep(150);
         }
 
         if (data.receiverEmail && toInput) {
           toInput.focus();
-          await sleep(40);
+          await sleep(50);
           document.execCommand('insertText', false, data.receiverEmail);
           if (toInput.value !== data.receiverEmail) {
             toInput.value = data.receiverEmail;
           }
           toInput.dispatchEvent(new Event('input', { bubbles: true }));
           toInput.dispatchEvent(new Event('change', { bubbles: true }));
-          await sleep(40);
+          await sleep(50);
 
-          // 1. Send Enter key to create pill
-          toInput.dispatchEvent(new KeyboardEvent('keydown', {
-            key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
-          }));
-          toInput.dispatchEvent(new KeyboardEvent('keyup', {
-            key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
-          }));
+          // Dispatch Enter, Comma, Tab to commit the Aura pill
+          ['Enter', 'Comma', 'Tab'].forEach((keyName) => {
+            const code = keyName === 'Enter' ? 13 : keyName === 'Comma' ? 188 : 9;
+            toInput.dispatchEvent(new KeyboardEvent('keydown', {
+              key: keyName, code: keyName, keyCode: code, which: code, bubbles: true, cancelable: true
+            }));
+            toInput.dispatchEvent(new KeyboardEvent('keyup', {
+              key: keyName, code: keyName, keyCode: code, which: code, bubbles: true, cancelable: true
+            }));
+          });
 
-          // 2. Also send Comma (alternative commit key in Aura)
-          toInput.dispatchEvent(new KeyboardEvent('keydown', {
-            key: ',', code: 'Comma', keyCode: 188, which: 188, bubbles: true, cancelable: true
-          }));
-          toInput.dispatchEvent(new KeyboardEvent('keyup', {
-            key: ',', code: 'Comma', keyCode: 188, which: 188, bubbles: true, cancelable: true
-          }));
+          await sleep(100);
 
-          await sleep(60);
-
-          // 3. Crucial: Blur to commit Aura component attributes
+          // Commit & Blur
           toInput.blur();
           toInput.dispatchEvent(new Event('blur', { bubbles: true }));
           toInput.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
         }
 
-        // Clear & Fill Subject
+        // 3. Clear & Fill Subject
         const subjectInput =
           document.querySelector('input[placeholder="Enter Subject..."]') ||
           document.querySelector('input[aria-label="Subject"]') ||
@@ -404,46 +350,128 @@ document.addEventListener('DOMContentLoaded', async () => {
           document.querySelector('.slds-form-element input.slds-input[placeholder*="Subject"]');
 
         if (subjectInput) {
-          subjectInput.focus(); // Focusing subject additionally blurs the To input
+          subjectInput.focus();
           subjectInput.value = '';
           subjectInput.dispatchEvent(new Event('input', { bubbles: true }));
           subjectInput.dispatchEvent(new Event('change', { bubbles: true }));
+          await sleep(50);
 
           if (data.emailSubject !== undefined && data.emailSubject !== null) {
-            await sleep(40);
             subjectInput.value = data.emailSubject;
             subjectInput.dispatchEvent(new Event('input', { bubbles: true }));
             subjectInput.dispatchEvent(new Event('change', { bubbles: true }));
-          }
-        }
-
-        // Send (If Explicitly Requested)
-        if (data.doSendNow) {
-          const sendBtn =
-            document.querySelector('button.send') ||
-            document.querySelector('button.cuf-publisherShareButton') ||
-            Array.from(document.querySelectorAll('button.slds-button_brand, button.slds-button')).find((btn) => {
-              const text = (btn.innerText || btn.textContent || "").trim().toLowerCase();
-              const title = (btn.getAttribute('title') || "").trim().toLowerCase();
-              return text === 'send' || title === 'send';
-            });
-
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.focus();
             await sleep(50);
-            sendBtn.click();
-            await sleep(600);
           }
+
+          subjectInput.blur();
+          subjectInput.dispatchEvent(new Event('blur', { bubbles: true }));
+          subjectInput.dispatchEvent(new FocusEvent('focusout', { bubbles: true }));
         }
 
-        resolve({ frame: 'top', success: true, bodyInjected });
+        resolve({ success: true });
       } catch (err) {
         resolve({ error: err.message || String(err) });
       }
     });
   }
 
-  // 2-PHASE DISPATCHER: Guarantees Body is Injected Before Allowing Send
+  // 2. SUBFRAME BODY INJECTOR (Injected across all frames)
+  function bodyFrameInjectRunner(formattedHtml) {
+    let bodyInjected = false;
+
+    if (document.body && (document.body.classList.contains('cke_editable') || document.body.getAttribute('contenteditable') === 'true')) {
+      document.body.focus();
+      document.body.innerHTML = formattedHtml;
+      document.body.dispatchEvent(new Event('input', { bubbles: true }));
+      document.body.dispatchEvent(new Event('change', { bubbles: true }));
+      bodyInjected = true;
+    }
+
+    if (!bodyInjected && window.CKEDITOR && window.CKEDITOR.instances) {
+      for (const k in window.CKEDITOR.instances) {
+        const inst = window.CKEDITOR.instances[k];
+        if (inst && inst.setData) {
+          inst.setData(formattedHtml);
+          bodyInjected = true;
+          break;
+        }
+      }
+    }
+
+    if (!bodyInjected) {
+      const innerIframe = document.querySelector('iframe.cke_wysiwyg_frame') || 
+                          document.querySelector('iframe[title="Email Body"]');
+      if (innerIframe && innerIframe.contentDocument && innerIframe.contentDocument.body) {
+        const b = innerIframe.contentDocument.body;
+        b.focus();
+        b.innerHTML = formattedHtml;
+        b.dispatchEvent(new Event('input', { bubbles: true }));
+        b.dispatchEvent(new Event('change', { bubbles: true }));
+        bodyInjected = true;
+      }
+    }
+
+    return { frame: window.self === window.top ? 'top' : 'subframe', bodyInjected };
+  }
+
+  // 3. SEND ACTION RUNNER: Full Pointer/Mouse Event Chain
+  function sendEmailActionRunner() {
+    return new Promise(async (resolve) => {
+      const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+      // Blur any active element so Aura finishes model binding
+      if (document.activeElement && typeof document.activeElement.blur === 'function') {
+        document.activeElement.blur();
+      }
+      await sleep(100);
+
+      // Locate Send button
+      const sendBtn =
+        document.querySelector('button.send') ||
+        document.querySelector('button.cuf-publisherShareButton') ||
+        document.querySelector('div[role="dialog"][aria-label="Email"] button.slds-button_brand') ||
+        document.querySelector('.slds-docked-composer button.slds-button_brand') ||
+        Array.from(document.querySelectorAll('button.slds-button_brand, button.slds-button')).find((btn) => {
+          const text = (btn.innerText || btn.textContent || "").trim().toLowerCase();
+          const title = (btn.getAttribute('title') || "").trim().toLowerCase();
+          return text === 'send' || title === 'send';
+        });
+
+      if (!sendBtn) {
+        resolve({ success: false, error: "Send button not found on page." });
+        return;
+      }
+
+      if (sendBtn.disabled) {
+        resolve({ success: false, error: "Send button is disabled." });
+        return;
+      }
+
+      // Dispatch full pointer and mouse event chain
+      sendBtn.focus();
+      await sleep(50);
+
+      const mouseEvents = ['pointerover', 'mouseover', 'pointerdown', 'mousedown', 'pointerup', 'mouseup', 'click'];
+      for (const eventName of mouseEvents) {
+        sendBtn.dispatchEvent(new MouseEvent(eventName, {
+          bubbles: true,
+          cancelable: true,
+          view: window,
+          buttons: 1
+        }));
+        await sleep(25);
+      }
+
+      try {
+        sendBtn.click();
+      } catch (e) {}
+
+      await sleep(600);
+      resolve({ success: true });
+    });
+  }
+
+  // 2-PHASE DISPATCHER: Guaranteed clean sequence with no duplicate field clears
   async function executeVerifiedDispatch(payload) {
     const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
     if (!tabs || tabs.length === 0) {
@@ -453,7 +481,19 @@ document.addEventListener('DOMContentLoaded', async () => {
     const tabId = tabs[0].id;
     const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-    // PHASE 1: Fill Top fields & Poll until subframe confirms CKEditor body injection
+    const formattedHtml = (payload.emailContent && (payload.emailContent.includes('<p>') || payload.emailContent.includes('<br>')))
+      ? payload.emailContent
+      : `<p>${(payload.emailContent || '').replace(/\n/g, '</p><p>')}</p>`;
+
+    // STEP 1: Fill Top fields (To, Subject) ONCE
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      world: 'MAIN',
+      func: topFrameFillRunner,
+      args: [payload]
+    });
+
+    // STEP 2: Poll Subframes for CKEditor Body Injection
     let bodyConfirmed = false;
     const startPoll = Date.now();
 
@@ -461,8 +501,8 @@ document.addEventListener('DOMContentLoaded', async () => {
       const results = await chrome.scripting.executeScript({
         target: { tabId, allFrames: true },
         world: 'MAIN',
-        func: inPageRunner,
-        args: [{ ...payload, doSendNow: false }]
+        func: bodyFrameInjectRunner,
+        args: [formattedHtml]
       });
 
       if (results && results.some((r) => r.result?.bodyInjected === true)) {
@@ -478,16 +518,16 @@ document.addEventListener('DOMContentLoaded', async () => {
       console.warn("⚠️ [Verified Dispatcher] CKEditor body not confirmed after 10s polling.");
     }
 
-    // PHASE 2: If shouldSend is true, wait full 1 second then trigger send
+    // STEP 3: 1-Second Pre-Send Settle Delay (allows Aura model to sync)
     if (payload.shouldSend) {
       console.log("⏳ [Verified Dispatcher] Waiting 1-second pre-send delay...");
-      await sleep(1000); // 1-Second Pre-Send Delay
+      await sleep(1000);
 
+      // STEP 4: Trigger Send via Pointer Event Chain in Top Frame
       await chrome.scripting.executeScript({
         target: { tabId },
         world: 'MAIN',
-        func: inPageRunner,
-        args: [{ ...payload, doSendNow: true }]
+        func: sendEmailActionRunner
       });
     }
 
