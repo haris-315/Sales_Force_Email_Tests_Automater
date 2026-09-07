@@ -1,6 +1,6 @@
 /**
  * Salesforce Email CSV Autofill - Controller
- * Supports Field Clearing & Nested Salesforce CKEditor iFrames
+ * Full Auto-Loop, Dialog State Awareness & Automatic Re-opening
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -33,6 +33,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const prevSubject = document.getElementById('prevSubject');
   const prevContent = document.getElementById('prevContent');
 
+  const inputDelaySec = document.getElementById('inputDelaySec');
+  const btnToggleLoop = document.getElementById('btnToggleLoop');
+
   const btnFillOnly = document.getElementById('btnFillOnly');
   const btnFillAndSend = document.getElementById('btnFillAndSend');
   const btnPrevRow = document.getElementById('btnPrevRow');
@@ -51,8 +54,11 @@ document.addEventListener('DOMContentLoaded', async () => {
       emailContent: ''
     },
     currentRowIndex: 0,
-    processedIndices: []
+    processedIndices: [],
+    delaySec: 3
   };
+
+  let isLoopRunning = false;
 
   // Load State from chrome.storage.local
   async function loadState() {
@@ -60,6 +66,9 @@ document.addEventListener('DOMContentLoaded', async () => {
       chrome.storage.local.get(['sf_autofill_state'], (result) => {
         if (result && result.sf_autofill_state) {
           state = { ...state, ...result.sf_autofill_state };
+          if (state.delaySec) {
+            inputDelaySec.value = state.delaySec;
+          }
         }
         resolve();
       });
@@ -213,28 +222,80 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.mapping.emailContent) colEmailContent.value = state.mapping.emailContent;
   }
 
-  // IN-PAGE SCRIPT RUNNER (Executed across all nested frames in MAIN world)
+  // IN-PAGE AUTOMATION RUNNER (Handles Open Check, Loading Poll, Clear, Fill, and Send)
   function inPageRunner(data) {
-    return new Promise(async (resolve) => {
+    return new Promise(async (resolve, reject) => {
       try {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-        let actionsDone = { receiver: false, subject: false, body: false, send: false };
+
+        // Helper: Check if Email Docked Composer is open and visible on screen
+        function isComposerOpen() {
+          const dialog =
+            document.querySelector('.slds-docked-composer.slds-is-open') ||
+            document.querySelector('div[role="dialog"].slds-is-open') ||
+            document.querySelector('div[role="dialog"][aria-label="Email"]');
+
+          return dialog && dialog.offsetParent !== null;
+        }
+
+        // Helper: Ensure composer is open; if not, click publisher button and wait
+        async function ensureComposerOpen() {
+          if (isComposerOpen()) return;
+
+          console.log("[SF Email Autofill] Email composer is closed. Clicking Email button...");
+
+          // Find the Email publisher button
+          const emailBtn =
+            document.querySelector('button[value="SendEmail"]') ||
+            document.querySelector('button[aria-label="Email"][title="Email"]') ||
+            document.querySelector('button.slds-button_neutral:has(lightning-icon[icon-name="standard:email"])') ||
+            Array.from(document.querySelectorAll('button')).find(b => (b.innerText || '').trim() === 'Email');
+
+          if (!emailBtn) {
+            throw new Error("Could not find the 'Email' button on the page to open the composer.");
+          }
+
+          emailBtn.focus();
+          emailBtn.click();
+
+          // Poll up to 10 seconds for the dialog and input fields to fully mount
+          const startTime = Date.now();
+          while (Date.now() - startTime < 10000) {
+            await sleep(250);
+
+            if (isComposerOpen()) {
+              const toReady = document.querySelector('ul[aria-label="To"] input[role="combobox"]') || 
+                              document.querySelector('.emailuiPillContainer input');
+              const subjectReady = document.querySelector('input[placeholder="Enter Subject..."]');
+
+              if (toReady || subjectReady) {
+                // Wait small buffer for CKEditor frame to initialize inside
+                await sleep(500);
+                console.log("[SF Email Autofill] Email composer opened and ready.");
+                return;
+              }
+            }
+          }
+
+          throw new Error("Timed out waiting for Salesforce Email composer to open.");
+        }
+
+        // --- STEP 1: ENSURE COMPOSER IS OPEN & READY ---
+        await ensureComposerOpen();
 
         const toContainer =
           document.querySelector('div[role="dialog"][aria-label="Email"]') ||
           document.querySelector('.emailuiComposer') ||
+          document.querySelector('.slds-docked-composer') ||
           document.body;
 
-        // ==========================================
-        // 1. CLEAR & FILL: RECEIVER (TO) FIELD
-        // ==========================================
+        // --- STEP 2: CLEAR & FILL RECEIVER (TO) ---
         const toInput =
           toContainer.querySelector('ul[aria-label="To"] input[role="combobox"]') ||
           toContainer.querySelector('.emailuiBaseAddressContainer input.uiPillContainerAutoComplete') ||
           toContainer.querySelector('.emailuiPillContainer input') ||
           toContainer.querySelector('input[aria-label="To"]');
 
-        // Always clear existing recipient pills first
         const existingPills = toContainer.querySelectorAll(
           'ul[aria-label="To"] .slds-pill__remove, ul[aria-label="To"] [data-action="delete"]'
         );
@@ -250,7 +311,6 @@ document.addEventListener('DOMContentLoaded', async () => {
           await sleep(120);
         }
 
-        // Insert new receiver email if provided
         if (data.receiverEmail && toInput) {
           toInput.focus();
           await sleep(30);
@@ -268,12 +328,9 @@ document.addEventListener('DOMContentLoaded', async () => {
           toInput.dispatchEvent(new KeyboardEvent('keyup', {
             key: 'Enter', code: 'Enter', keyCode: 13, which: 13, bubbles: true, cancelable: true
           }));
-          actionsDone.receiver = true;
         }
 
-        // ==========================================
-        // 2. CLEAR & FILL: SUBJECT FIELD
-        // ==========================================
+        // --- STEP 3: CLEAR & FILL SUBJECT ---
         const subjectInput =
           document.querySelector('input[placeholder="Enter Subject..."]') ||
           document.querySelector('input[aria-label="Subject"]') ||
@@ -281,7 +338,6 @@ document.addEventListener('DOMContentLoaded', async () => {
           document.querySelector('.slds-form-element input.slds-input[placeholder*="Subject"]');
 
         if (subjectInput) {
-          // Clear first
           subjectInput.value = '';
           subjectInput.dispatchEvent(new Event('input', { bubbles: true }));
           subjectInput.dispatchEvent(new Event('change', { bubbles: true }));
@@ -292,13 +348,10 @@ document.addEventListener('DOMContentLoaded', async () => {
             subjectInput.value = data.emailSubject;
             subjectInput.dispatchEvent(new Event('input', { bubbles: true }));
             subjectInput.dispatchEvent(new Event('change', { bubbles: true }));
-            actionsDone.subject = true;
           }
         }
 
-        // ==========================================
-        // 3. CLEAR & FILL: BODY FIELD (CKEditor)
-        // ==========================================
+        // --- STEP 4: CLEAR & FILL BODY (CKEditor Nested Iframes) ---
         const formattedHtml = (data.emailContent && (data.emailContent.includes('<p>') || data.emailContent.includes('<br>')))
           ? data.emailContent
           : `<p>${(data.emailContent || '').replace(/\n/g, '</p><p>')}</p>`;
@@ -306,29 +359,30 @@ document.addEventListener('DOMContentLoaded', async () => {
         function writeToBody(bodyElem) {
           if (!bodyElem) return false;
           bodyElem.focus();
-          // Clear and replace content
           bodyElem.innerHTML = formattedHtml;
           bodyElem.dispatchEvent(new Event('input', { bubbles: true }));
           bodyElem.dispatchEvent(new Event('change', { bubbles: true }));
           return true;
         }
 
-        // Case A: Inside the CKEditor iframe
+        let bodyWritten = false;
+
+        // Direct inside CKEditor frame
         if (document.body && (document.body.classList.contains('cke_editable') || document.body.getAttribute('contenteditable') === 'true')) {
-          if (writeToBody(document.body)) actionsDone.body = true;
+          if (writeToBody(document.body)) bodyWritten = true;
         }
 
-        // Case B: Direct inner iframe
-        if (!actionsDone.body) {
+        // Direct inner iframe
+        if (!bodyWritten) {
           const innerIframe = document.querySelector('iframe.cke_wysiwyg_frame') || 
                               document.querySelector('iframe[title="Email Body"]');
           if (innerIframe && innerIframe.contentDocument && innerIframe.contentDocument.body) {
-            if (writeToBody(innerIframe.contentDocument.body)) actionsDone.body = true;
+            if (writeToBody(innerIframe.contentDocument.body)) bodyWritten = true;
           }
         }
 
-        // Case C: Outer iframe -> Inner iframe
-        if (!actionsDone.body) {
+        // Outer iframe -> Inner iframe
+        if (!bodyWritten) {
           const allIframes = Array.from(document.querySelectorAll('iframe'));
           for (const outer of allIframes) {
             try {
@@ -336,15 +390,14 @@ document.addEventListener('DOMContentLoaded', async () => {
               if (outerDoc) {
                 const ckeBody = outerDoc.querySelector('body.cke_editable, div[contenteditable="true"]');
                 if (ckeBody && writeToBody(ckeBody)) {
-                  actionsDone.body = true;
+                  bodyWritten = true;
                   break;
                 }
-
                 const nestedIframe = outerDoc.querySelector('iframe.cke_wysiwyg_frame') || 
                                      outerDoc.querySelector('iframe[title="Email Body"]');
                 if (nestedIframe && nestedIframe.contentDocument && nestedIframe.contentDocument.body) {
                   if (writeToBody(nestedIframe.contentDocument.body)) {
-                    actionsDone.body = true;
+                    bodyWritten = true;
                     break;
                   }
                 }
@@ -353,43 +406,50 @@ document.addEventListener('DOMContentLoaded', async () => {
           }
         }
 
-        // Case D: CKEDITOR global instance
-        if (!actionsDone.body && window.CKEDITOR && window.CKEDITOR.instances) {
+        // CKEDITOR global instance
+        if (!bodyWritten && window.CKEDITOR && window.CKEDITOR.instances) {
           for (const k in window.CKEDITOR.instances) {
             const inst = window.CKEDITOR.instances[k];
             if (inst && inst.setData) {
               inst.setData(formattedHtml);
-              actionsDone.body = true;
+              bodyWritten = true;
               break;
             }
           }
         }
 
-        // ==========================================
-        // 4. SEND BUTTON (If Fill & Send)
-        // ==========================================
+        // --- STEP 5: SEND (If Requested) ---
         if (data.shouldSend) {
           await sleep(400);
-          const buttons = Array.from(
-            document.querySelectorAll('button.slds-button_brand, button.slds-button')
-          );
-          const sendBtn = buttons.find((btn) => {
-            const text = (btn.innerText || btn.textContent || "").trim().toLowerCase();
-            const title = (btn.getAttribute('title') || "").trim().toLowerCase();
-            return text === 'send' || title === 'send';
-          });
 
-          if (sendBtn && !sendBtn.disabled) {
-            sendBtn.focus();
-            await sleep(50);
-            sendBtn.click();
-            actionsDone.send = true;
+          const sendBtn =
+            document.querySelector('button.send') ||
+            document.querySelector('button.cuf-publisherShareButton') ||
+            Array.from(document.querySelectorAll('button.slds-button_brand, button.slds-button')).find((btn) => {
+              const text = (btn.innerText || btn.textContent || "").trim().toLowerCase();
+              const title = (btn.getAttribute('title') || "").trim().toLowerCase();
+              return text === 'send' || title === 'send';
+            });
+
+          if (!sendBtn) {
+            throw new Error("Could not locate the 'Send' button.");
           }
+
+          if (sendBtn.disabled) {
+            throw new Error("Send button is disabled. Please verify field validity.");
+          }
+
+          sendBtn.focus();
+          await sleep(50);
+          sendBtn.click();
+
+          // Wait a short moment for Salesforce to dispatch the send action
+          await sleep(600);
         }
 
-        resolve({ success: true, actionsDone });
-      } catch (e) {
-        resolve({ success: false, error: e.message || String(e) });
+        resolve({ success: true });
+      } catch (err) {
+        reject(err.message || String(err));
       }
     });
   }
@@ -427,6 +487,75 @@ document.addEventListener('DOMContentLoaded', async () => {
     };
   }
 
+  // Helper interruptible sleep
+  function interruptibleSleep(ms) {
+    return new Promise((resolve) => {
+      const start = Date.now();
+      const interval = setInterval(() => {
+        if (!isLoopRunning || Date.now() - start >= ms) {
+          clearInterval(interval);
+          resolve();
+        }
+      }, 100);
+    });
+  }
+
+  // Loop Controller
+  async function runAutoLoop() {
+    isLoopRunning = true;
+    btnToggleLoop.textContent = '⏹️ Stop Loop';
+    btnToggleLoop.classList.add('running');
+    btnFillOnly.disabled = true;
+    btnFillAndSend.disabled = true;
+
+    const delaySec = Math.max(1, parseInt(inputDelaySec.value, 10) || 3);
+    state.delaySec = delaySec;
+    await saveState();
+
+    while (isLoopRunning && state.currentRowIndex < state.rows.length) {
+      const rowNum = state.currentRowIndex + 1;
+      const total = state.rows.length;
+
+      showBanner(`Looping: Processing Row ${rowNum} of ${total}...`, 'info', 0);
+
+      const data = getCurrentRowData(true);
+      if (!data) break;
+
+      try {
+        await executeInMainWorld(data);
+        state.processedIndices.push(state.currentRowIndex);
+        state.currentRowIndex++;
+        await saveState();
+        renderUI();
+
+        showBanner(`✅ Sent Row ${rowNum} of ${total}!`, 'success', 2000);
+
+        if (state.currentRowIndex >= total) {
+          showBanner("🎉 All CSV rows dispatched successfully!", 'success');
+          break;
+        }
+
+        // Countdown delay before next row
+        if (isLoopRunning) {
+          for (let s = delaySec; s > 0; s--) {
+            if (!isLoopRunning) break;
+            btnToggleLoop.textContent = `⏹️ Stop Loop (${s}s...)`;
+            await interruptibleSleep(1000);
+          }
+        }
+      } catch (err) {
+        showBanner(`Loop Paused on Row ${rowNum}: ${err.message || err}`, 'error', 0);
+        break;
+      }
+    }
+
+    isLoopRunning = false;
+    btnToggleLoop.textContent = '🔁 Start Auto Loop';
+    btnToggleLoop.classList.remove('running');
+    btnFillOnly.disabled = false;
+    btnFillAndSend.disabled = false;
+  }
+
   // Update UI Step Views
   function renderUI() {
     if (state.rows.length === 0) {
@@ -460,6 +589,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       prevContent.textContent = 'All rows have been dispatched.';
       btnFillOnly.disabled = true;
       btnFillAndSend.disabled = true;
+      btnToggleLoop.disabled = true;
       return;
     }
 
@@ -474,12 +604,34 @@ document.addEventListener('DOMContentLoaded', async () => {
       prevContent.textContent = data.emailContent || '(Empty)';
     }
 
-    btnFillOnly.disabled = false;
-    btnFillAndSend.disabled = false;
-    btnPrevRow.disabled = state.currentRowIndex === 0;
+    if (!isLoopRunning) {
+      btnFillOnly.disabled = false;
+      btnFillAndSend.disabled = false;
+      btnToggleLoop.disabled = false;
+    }
+    btnPrevRow.disabled = state.currentRowIndex === 0 || isLoopRunning;
   }
 
   // --- Event Listeners ---
+
+  // Delay input change
+  inputDelaySec.addEventListener('change', async () => {
+    state.delaySec = Math.max(1, parseInt(inputDelaySec.value, 10) || 3);
+    await saveState();
+  });
+
+  // Toggle Auto Loop
+  btnToggleLoop.addEventListener('click', () => {
+    if (isLoopRunning) {
+      isLoopRunning = false;
+      btnToggleLoop.textContent = '🔁 Start Auto Loop';
+      btnToggleLoop.classList.remove('running');
+      showBanner("Auto loop stopped.", 'info');
+      renderUI();
+    } else {
+      runAutoLoop();
+    }
+  });
 
   tabBtnUpload.addEventListener('click', () => {
     tabBtnUpload.classList.add('active');

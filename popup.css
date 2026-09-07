@@ -5,6 +5,8 @@
   --success-hover: #1e5c33;
   --danger: #ea001e;
   --danger-bg: #fee8e8;
+  --loop: #702e84;
+  --loop-hover: #501d60;
   --bg-main: #f3f3f3;
   --bg-card: #ffffff;
   --text-main: #181818;
@@ -339,6 +341,61 @@ body {
   border-radius: 4px;
   width: 100%;
   white-space: pre-wrap;
+}
+
+/* Loop Configuration Box */
+.loop-config-box {
+  background: #f8f0fc;
+  border: 1px solid #e9d2f5;
+  border-radius: 6px;
+  padding: 10px;
+  margin-bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.loop-config-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.loop-label {
+  font-weight: 600;
+  color: #501d60;
+  font-size: 12px;
+}
+
+.delay-input {
+  width: 65px;
+  padding: 4px 8px;
+  border: 1px solid #d3b4e3;
+  border-radius: 4px;
+  font-size: 12px;
+  text-align: center;
+  font-weight: 600;
+  outline: none;
+}
+
+.delay-input:focus {
+  border-color: var(--loop);
+  box-shadow: 0 0 0 1px var(--loop);
+}
+
+.btn-loop {
+  background: linear-gradient(135deg, #702e84, #501d60);
+  color: white;
+  font-size: 13px;
+  padding: 8px 12px;
+}
+
+.btn-loop:hover:not(:disabled) {
+  background: linear-gradient(135deg, #501d60, #381045);
+}
+
+.btn-loop.running {
+  background: linear-gradient(135deg, #d9381e, #b71c1c);
 }
 
 /* Buttons */
