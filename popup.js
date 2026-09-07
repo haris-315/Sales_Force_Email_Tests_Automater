@@ -1,6 +1,6 @@
 /**
  * Salesforce Email CSV Autofill - Controller
- * Full Auto-Loop, Dialog State Awareness & Automatic Re-opening
+ * Full Auto-Loop with Shadow-DOM-Aware Auto-Opening
  */
 
 document.addEventListener('DOMContentLoaded', async () => {
@@ -222,13 +222,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.mapping.emailContent) colEmailContent.value = state.mapping.emailContent;
   }
 
-  // IN-PAGE AUTOMATION RUNNER (Handles Open Check, Loading Poll, Clear, Fill, and Send)
+  // IN-PAGE AUTOMATION RUNNER
   function inPageRunner(data) {
     return new Promise(async (resolve, reject) => {
       try {
         const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-        // Helper: Check if Email Docked Composer is open and visible on screen
+        // Helper: Check if Email Docked Composer is open and visible
         function isComposerOpen() {
           const dialog =
             document.querySelector('.slds-docked-composer.slds-is-open') ||
@@ -238,40 +238,58 @@ document.addEventListener('DOMContentLoaded', async () => {
           return dialog && dialog.offsetParent !== null;
         }
 
-        // Helper: Ensure composer is open; if not, click publisher button and wait
+        // Helper: Deep search across regular DOM and LWC Shadow DOMs for the Email button
+        function findEmailOpenButton(root = document) {
+          if (!root) return null;
+
+          let btn =
+            root.querySelector('button[value="SendEmail"]') ||
+            root.querySelector('lightning-button-group[data-target-selection-name="SendAnEmailTab"] button') ||
+            root.querySelector('runtime_sales_activities-activity-panel-composer button');
+          if (btn) return btn;
+
+          const composerHost = root.querySelector('runtime_sales_activities-activity-panel-composer');
+          if (composerHost && composerHost.shadowRoot) {
+            const shadowBtn = composerHost.shadowRoot.querySelector('button[value="SendEmail"], button');
+            if (shadowBtn) return shadowBtn;
+          }
+
+          const all = root.querySelectorAll('*');
+          for (const el of all) {
+            if (el.shadowRoot) {
+              const found = findEmailOpenButton(el.shadowRoot);
+              if (found) return found;
+            }
+          }
+          return null;
+        }
+
+        // Helper: Ensure composer is open
         async function ensureComposerOpen() {
           if (isComposerOpen()) return;
 
-          console.log("[SF Email Autofill] Email composer is closed. Clicking Email button...");
-
-          // Find the Email publisher button
-          const emailBtn =
-            document.querySelector('button[value="SendEmail"]') ||
-            document.querySelector('button[aria-label="Email"][title="Email"]') ||
-            document.querySelector('button.slds-button_neutral:has(lightning-icon[icon-name="standard:email"])') ||
-            Array.from(document.querySelectorAll('button')).find(b => (b.innerText || '').trim() === 'Email');
+          console.log("[SF Email Autofill] Email composer is closed. Piercing shadow DOM to click Email button...");
+          const emailBtn = findEmailOpenButton(document);
 
           if (!emailBtn) {
-            throw new Error("Could not find the 'Email' button on the page to open the composer.");
+            throw new Error("Could not find the 'Email' publisher button (piercing shadow roots).");
           }
 
           emailBtn.focus();
           emailBtn.click();
 
-          // Poll up to 10 seconds for the dialog and input fields to fully mount
+          // Poll up to 10 seconds for the dialog to mount
           const startTime = Date.now();
           while (Date.now() - startTime < 10000) {
             await sleep(250);
 
             if (isComposerOpen()) {
-              const toReady = document.querySelector('ul[aria-label="To"] input[role="combobox"]') || 
-                              document.querySelector('.emailuiPillContainer input');
+              const toReady = document.querySelector('ul[aria-label="To"] input[role="combobox"], .emailuiPillContainer input');
               const subjectReady = document.querySelector('input[placeholder="Enter Subject..."]');
 
               if (toReady || subjectReady) {
-                // Wait small buffer for CKEditor frame to initialize inside
-                await sleep(500);
-                console.log("[SF Email Autofill] Email composer opened and ready.");
+                await sleep(500); // Wait for nested CKEditor iframe to initialize
+                console.log("[SF Email Autofill] Email composer opened and mounted.");
                 return;
               }
             }
@@ -280,7 +298,7 @@ document.addEventListener('DOMContentLoaded', async () => {
           throw new Error("Timed out waiting for Salesforce Email composer to open.");
         }
 
-        // --- STEP 1: ENSURE COMPOSER IS OPEN & READY ---
+        // --- STEP 1: ENSURE COMPOSER IS OPEN ---
         await ensureComposerOpen();
 
         const toContainer =
@@ -443,7 +461,6 @@ document.addEventListener('DOMContentLoaded', async () => {
           await sleep(50);
           sendBtn.click();
 
-          // Wait a short moment for Salesforce to dispatch the send action
           await sleep(600);
         }
 
@@ -614,13 +631,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // --- Event Listeners ---
 
-  // Delay input change
   inputDelaySec.addEventListener('change', async () => {
     state.delaySec = Math.max(1, parseInt(inputDelaySec.value, 10) || 3);
     await saveState();
   });
 
-  // Toggle Auto Loop
   btnToggleLoop.addEventListener('click', () => {
     if (isLoopRunning) {
       isLoopRunning = false;
