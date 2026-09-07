@@ -57,16 +57,18 @@
     </section>
 
     <!-- Step 2: Column Mapping -->
+    <!-- Step 2: Column Mapping & Templatizer -->
     <section class="card hidden" id="stepMapping">
       <div class="card-header space-between">
         <div class="flex-align">
           <span class="step-num">2</span>
-          <h2>Map CSV Columns</h2>
+          <h2>Setup Fields & Template</h2>
         </div>
         <button id="btnBackToUpload" class="btn btn-outline btn-sm">Change CSV</button>
       </div>
 
       <div class="mapping-grid">
+        <!-- Receiver Email Field -->
         <div class="form-group">
           <label for="colReceiverEmail">
             <span class="required-dot"></span> Receiver Email Field
@@ -76,22 +78,67 @@
           </select>
         </div>
 
+        <!-- Subject Field (Direct or Template) -->
         <div class="form-group">
-          <label for="colEmailSubject">
-            <span class="required-dot"></span> Email Subject Field
-          </label>
-          <select id="colEmailSubject" class="select-input">
-            <option value="">-- Select Column --</option>
-          </select>
+          <div class="label-row-toggle">
+            <label for="colEmailSubject">
+              <span class="required-dot"></span> Email Subject
+            </label>
+            <div class="mode-toggle">
+              <button type="button" id="toggleSubjectDirect" class="mode-btn active">Column</button>
+              <button type="button" id="toggleSubjectTemplate" class="mode-btn">Template</button>
+            </div>
+          </div>
+
+          <div id="subjectDirectSection">
+            <select id="colEmailSubject" class="select-input">
+              <option value="">-- Select Column --</option>
+            </select>
+          </div>
+
+          <div id="subjectTemplateSection" class="hidden">
+            <input type="text" id="subjectTemplateInput" class="template-input" placeholder="e.g. Quick question for {{First Name}}">
+          </div>
         </div>
 
+        <!-- Email Body Content (Direct or Templatizer) -->
         <div class="form-group">
-          <label for="colEmailContent">
-            <span class="required-dot"></span> Email Body Content
-          </label>
-          <select id="colEmailContent" class="select-input">
-            <option value="">-- Select Column --</option>
-          </select>
+          <div class="label-row-toggle">
+            <label for="colEmailContent">
+              <span class="required-dot"></span> Email Body
+            </label>
+            <div class="mode-toggle">
+              <button type="button" id="toggleBodyDirect" class="mode-btn active">Direct Column</button>
+              <button type="button" id="toggleBodyTemplate" class="mode-btn">✨ Templatizer</button>
+            </div>
+          </div>
+
+          <!-- Direct Column Select -->
+          <div id="bodyDirectSection">
+            <select id="colEmailContent" class="select-input">
+              <option value="">-- Select Column --</option>
+            </select>
+          </div>
+
+          <!-- Templatizer Mode -->
+          <div id="bodyTemplateSection" class="hidden">
+            <div class="chips-header-row">
+              <span class="chips-title">Insert Dynamic Variable:</span>
+            </div>
+            <div id="variableChipsContainer" class="variable-chips">
+              <!-- Dynamically populated chips -->
+            </div>
+
+            <textarea id="bodyTemplateInput" class="body-template-textarea" placeholder="Hi {{First Name}},&#10;&#10;I came across {{Company}} and wanted to reach out regarding...&#10;&#10;Best regards,&#10;Our Team"></textarea>
+
+            <!-- Live Template Evaluation Preview -->
+            <div class="template-preview-card">
+              <div class="preview-header-small">
+                <span>👁️ Dynamic Live Preview (Row 1):</span>
+              </div>
+              <div id="liveBodyPreview" class="live-preview-content">Type a template above to see dynamic preview...</div>
+            </div>
+          </div>
         </div>
       </div>
 

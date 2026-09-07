@@ -27,6 +27,21 @@ document.addEventListener('DOMContentLoaded', async () => {
   const colEmailContent = document.getElementById('colEmailContent');
   const btnConfirmMapping = document.getElementById('btnConfirmMapping');
 
+  // Templatizer DOM Elements
+  const toggleSubjectDirect = document.getElementById('toggleSubjectDirect');
+  const toggleSubjectTemplate = document.getElementById('toggleSubjectTemplate');
+  const subjectDirectSection = document.getElementById('subjectDirectSection');
+  const subjectTemplateSection = document.getElementById('subjectTemplateSection');
+  const subjectTemplateInput = document.getElementById('subjectTemplateInput');
+
+  const toggleBodyDirect = document.getElementById('toggleBodyDirect');
+  const toggleBodyTemplate = document.getElementById('toggleBodyTemplate');
+  const bodyDirectSection = document.getElementById('bodyDirectSection');
+  const bodyTemplateSection = document.getElementById('bodyTemplateSection');
+  const variableChipsContainer = document.getElementById('variableChipsContainer');
+  const bodyTemplateInput = document.getElementById('bodyTemplateInput');
+  const liveBodyPreview = document.getElementById('liveBodyPreview');
+
   const rowCounterBadge = document.getElementById('rowCounterBadge');
   const progressBarFill = document.getElementById('progressBarFill');
   const prevTo = document.getElementById('prevTo');
@@ -51,7 +66,11 @@ document.addEventListener('DOMContentLoaded', async () => {
     mapping: {
       receiverEmail: '',
       emailSubject: '',
-      emailContent: ''
+      emailContent: '',
+      subjectMode: 'direct', // 'direct' | 'template'
+      subjectTemplate: '',
+      bodyMode: 'direct', // 'direct' | 'template'
+      bodyTemplate: ''
     },
     currentRowIndex: 0,
     processedIndices: [],
@@ -66,6 +85,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       chrome.storage.local.get(['sf_autofill_state'], (result) => {
         if (result && result.sf_autofill_state) {
           state = { ...state, ...result.sf_autofill_state };
+          if (!state.mapping) {
+            state.mapping = {
+              receiverEmail: '',
+              emailSubject: '',
+              emailContent: '',
+              subjectMode: 'direct',
+              subjectTemplate: '',
+              bodyMode: 'direct',
+              bodyTemplate: ''
+            };
+          }
           if (state.delaySec) {
             inputDelaySec.value = state.delaySec;
           }
@@ -95,6 +125,75 @@ document.addEventListener('DOMContentLoaded', async () => {
         statusBanner.classList.add('hidden');
       }, timeoutMs);
     }
+  }
+
+  // Dynamic Template Interpolator: Replaces {{Header}}, {Header}, or ${Header}
+  function interpolateTemplate(templateStr, rowObj) {
+    if (!templateStr) return '';
+    if (!rowObj) return templateStr;
+
+    return templateStr.replace(/\{\{([^}]+)\}\}|\{([^}]+)\}|\$\{([^}]+)\}/g, (match, p1, p2, p3) => {
+      const rawKey = (p1 || p2 || p3 || '').trim();
+      if (rawKey in rowObj) {
+        return rowObj[rawKey] !== undefined ? rowObj[rawKey] : '';
+      }
+      const lowerKey = rawKey.toLowerCase();
+      const matchedKey = Object.keys(rowObj).find((k) => k.trim().toLowerCase() === lowerKey);
+      if (matchedKey && rowObj[matchedKey] !== undefined) {
+        return rowObj[matchedKey];
+      }
+      return match;
+    });
+  }
+
+  // Live Body Preview Evaluator
+  function updateLiveBodyPreview() {
+    if (!liveBodyPreview) return;
+    if (state.mapping.bodyMode !== 'template') return;
+
+    const sampleRow = state.rows[state.currentRowIndex || 0] || {};
+    const tpl = bodyTemplateInput.value || '';
+    if (!tpl.trim()) {
+      liveBodyPreview.textContent = 'Type a template above or click variable chips to preview...';
+      return;
+    }
+    const evaluated = interpolateTemplate(tpl, sampleRow);
+    liveBodyPreview.textContent = evaluated || '(Empty Output)';
+  }
+
+  // Insert Variable Placeholder at Current Textarea Cursor Position
+  function insertPlaceholder(inputElem, placeholder) {
+    if (!inputElem) return;
+    inputElem.focus();
+    const start = inputElem.selectionStart || 0;
+    const end = inputElem.selectionEnd || 0;
+    const text = inputElem.value;
+    const before = text.substring(0, start);
+    const after = text.substring(end, text.length);
+    inputElem.value = before + placeholder + after;
+    const newPos = start + placeholder.length;
+    inputElem.selectionStart = newPos;
+    inputElem.selectionEnd = newPos;
+    inputElem.dispatchEvent(new Event('input', { bubbles: true }));
+  }
+
+  // Render Interactive Variable Chips
+  function renderVariableChips() {
+    if (!variableChipsContainer) return;
+    variableChipsContainer.innerHTML = '';
+    state.headers.forEach((h) => {
+      const chip = document.createElement('button');
+      chip.type = 'button';
+      chip.className = 'var-chip';
+      chip.textContent = `+ {{${h}}}`;
+      chip.title = `Insert {{${h}}} into template`;
+      chip.addEventListener('click', () => {
+        insertPlaceholder(bodyTemplateInput, `{{${h}}}`);
+        state.mapping.bodyTemplate = bodyTemplateInput.value;
+        updateLiveBodyPreview();
+      });
+      variableChipsContainer.appendChild(chip);
+    });
   }
 
   // RFC 4180 Compliant CSV Parser
@@ -163,7 +262,15 @@ document.addEventListener('DOMContentLoaded', async () => {
     state.rows = parsed.rows;
     state.currentRowIndex = 0;
     state.processedIndices = [];
-    state.mapping = { receiverEmail: '', emailSubject: '', emailContent: '' };
+    state.mapping = {
+      receiverEmail: '',
+      emailSubject: '',
+      emailContent: '',
+      subjectMode: 'direct',
+      subjectTemplate: '',
+      bodyMode: 'direct',
+      bodyTemplate: ''
+    };
 
     uploadFilename.textContent = `${fileName} (${state.rows.length} rows loaded)`;
     populateMappingOptions();
@@ -189,7 +296,7 @@ document.addEventListener('DOMContentLoaded', async () => {
     reader.readAsText(file);
   }
 
-  // Populate Mapping Dropdowns with Smart Column Guessing
+  // Populate Mapping Dropdowns & Templatizer Options
   function populateMappingOptions() {
     const selects = [colReceiverEmail, colEmailSubject, colEmailContent];
 
@@ -203,6 +310,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       });
     });
 
+    // Auto-guess columns
     state.headers.forEach((h) => {
       const lower = h.toLowerCase();
       if (!state.mapping.receiverEmail && (lower.includes('email') || lower.includes('receiver') || lower.includes('to'))) {
@@ -220,6 +328,37 @@ document.addEventListener('DOMContentLoaded', async () => {
     if (state.mapping.receiverEmail) colReceiverEmail.value = state.mapping.receiverEmail;
     if (state.mapping.emailSubject) colEmailSubject.value = state.mapping.emailSubject;
     if (state.mapping.emailContent) colEmailContent.value = state.mapping.emailContent;
+
+    // Apply Subject Mode
+    if (state.mapping.subjectMode === 'template') {
+      toggleSubjectTemplate.classList.add('active');
+      toggleSubjectDirect.classList.remove('active');
+      subjectDirectSection.classList.add('hidden');
+      subjectTemplateSection.classList.remove('hidden');
+      subjectTemplateInput.value = state.mapping.subjectTemplate || '';
+    } else {
+      toggleSubjectDirect.classList.add('active');
+      toggleSubjectTemplate.classList.remove('active');
+      subjectDirectSection.classList.remove('hidden');
+      subjectTemplateSection.classList.add('hidden');
+    }
+
+    // Apply Body Mode
+    if (state.mapping.bodyMode === 'template') {
+      toggleBodyTemplate.classList.add('active');
+      toggleBodyDirect.classList.remove('active');
+      bodyDirectSection.classList.add('hidden');
+      bodyTemplateSection.classList.remove('hidden');
+      bodyTemplateInput.value = state.mapping.bodyTemplate || '';
+    } else {
+      toggleBodyDirect.classList.add('active');
+      toggleBodyTemplate.classList.remove('active');
+      bodyDirectSection.classList.remove('hidden');
+      bodyTemplateSection.classList.add('hidden');
+    }
+
+    renderVariableChips();
+    updateLiveBodyPreview();
   }
 
   // 1. TOP FRAME RUNNER: Ensures modal open, clears & creates To pill, clears & fills Subject
@@ -659,16 +798,33 @@ document.addEventListener('DOMContentLoaded', async () => {
     return { success: true, bodyConfirmed, verifiedSnippet };
   }
 
-  // Get current row payload mapped to fields
+  // Get current row payload mapped to fields (with dynamic template interpolation)
   function getCurrentRowData(shouldSend = false) {
     if (state.rows.length === 0 || state.currentRowIndex >= state.rows.length) {
       return null;
     }
     const row = state.rows[state.currentRowIndex];
+
+    // Compute Subject (Direct Column vs Dynamic Template)
+    let emailSubject = '';
+    if (state.mapping.subjectMode === 'template') {
+      emailSubject = interpolateTemplate(state.mapping.subjectTemplate || '', row);
+    } else {
+      emailSubject = row[state.mapping.emailSubject] || '';
+    }
+
+    // Compute Email Body (Direct Column vs Dynamic Templatizer)
+    let emailContent = '';
+    if (state.mapping.bodyMode === 'template') {
+      emailContent = interpolateTemplate(state.mapping.bodyTemplate || '', row);
+    } else {
+      emailContent = row[state.mapping.emailContent] || '';
+    }
+
     return {
       receiverEmail: row[state.mapping.receiverEmail] || '',
-      emailSubject: row[state.mapping.emailSubject] || '',
-      emailContent: row[state.mapping.emailContent] || '',
+      emailSubject,
+      emailContent,
       shouldSend
     };
   }
@@ -751,7 +907,15 @@ document.addEventListener('DOMContentLoaded', async () => {
       return;
     }
 
-    if (!state.mapping.receiverEmail || !state.mapping.emailSubject || !state.mapping.emailContent) {
+    const isReceiverValid = Boolean(state.mapping.receiverEmail);
+    const isSubjectValid = state.mapping.subjectMode === 'template'
+      ? Boolean(state.mapping.subjectTemplate && state.mapping.subjectTemplate.trim())
+      : Boolean(state.mapping.emailSubject);
+    const isBodyValid = state.mapping.bodyMode === 'template'
+      ? Boolean(state.mapping.bodyTemplate && state.mapping.bodyTemplate.trim())
+      : Boolean(state.mapping.emailContent);
+
+    if (!isReceiverValid || !isSubjectValid || !isBodyValid) {
       stepUpload.classList.add('hidden');
       stepMapping.classList.remove('hidden');
       stepDashboard.classList.add('hidden');
@@ -799,6 +963,50 @@ document.addEventListener('DOMContentLoaded', async () => {
   }
 
   // --- Event Listeners ---
+
+  // Subject Mode Toggles
+  toggleSubjectDirect.addEventListener('click', () => {
+    state.mapping.subjectMode = 'direct';
+    toggleSubjectDirect.classList.add('active');
+    toggleSubjectTemplate.classList.remove('active');
+    subjectDirectSection.classList.remove('hidden');
+    subjectTemplateSection.classList.add('hidden');
+  });
+
+  toggleSubjectTemplate.addEventListener('click', () => {
+    state.mapping.subjectMode = 'template';
+    toggleSubjectTemplate.classList.add('active');
+    toggleSubjectDirect.classList.remove('active');
+    subjectDirectSection.classList.add('hidden');
+    subjectTemplateSection.classList.remove('hidden');
+  });
+
+  subjectTemplateInput.addEventListener('input', () => {
+    state.mapping.subjectTemplate = subjectTemplateInput.value;
+  });
+
+  // Body Mode Toggles
+  toggleBodyDirect.addEventListener('click', () => {
+    state.mapping.bodyMode = 'direct';
+    toggleBodyDirect.classList.add('active');
+    toggleBodyTemplate.classList.remove('active');
+    bodyDirectSection.classList.remove('hidden');
+    bodyTemplateSection.classList.add('hidden');
+  });
+
+  toggleBodyTemplate.addEventListener('click', () => {
+    state.mapping.bodyMode = 'template';
+    toggleBodyTemplate.classList.add('active');
+    toggleBodyDirect.classList.remove('active');
+    bodyDirectSection.classList.add('hidden');
+    bodyTemplateSection.classList.remove('hidden');
+    updateLiveBodyPreview();
+  });
+
+  bodyTemplateInput.addEventListener('input', () => {
+    state.mapping.bodyTemplate = bodyTemplateInput.value;
+    updateLiveBodyPreview();
+  });
 
   inputDelaySec.addEventListener('change', async () => {
     state.delaySec = Math.max(1, parseInt(inputDelaySec.value, 10) || 3);
@@ -848,7 +1056,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   btnBackToUpload.addEventListener('click', () => {
     state.rows = [];
     state.headers = [];
-    state.mapping = { receiverEmail: '', emailSubject: '', emailContent: '' };
+    state.mapping = {
+      receiverEmail: '',
+      emailSubject: '',
+      emailContent: '',
+      subjectMode: 'direct',
+      subjectTemplate: '',
+      bodyMode: 'direct',
+      bodyTemplate: ''
+    };
     renderUI();
   });
 
@@ -878,28 +1094,48 @@ document.addEventListener('DOMContentLoaded', async () => {
       showBanner("Please select a Receiver Email column", "error");
       return;
     }
-    if (!colEmailSubject.value) {
-      showBanner("Please select an Email Subject column", "error");
-      return;
+
+    // Validate Subject
+    if (state.mapping.subjectMode === 'template') {
+      const tpl = (subjectTemplateInput.value || '').trim();
+      if (!tpl) {
+        showBanner("Please enter a subject template (e.g. Hello {{First Name}})", "error");
+        return;
+      }
+      state.mapping.subjectTemplate = tpl;
+    } else {
+      if (!colEmailSubject.value) {
+        showBanner("Please select an Email Subject column", "error");
+        return;
+      }
+      state.mapping.emailSubject = colEmailSubject.value;
     }
-    if (!colEmailContent.value) {
-      showBanner("Please select an Email Content column", "error");
-      return;
+
+    // Validate Body
+    if (state.mapping.bodyMode === 'template') {
+      const tpl = (bodyTemplateInput.value || '').trim();
+      if (!tpl) {
+        showBanner("Please compose a body template or switch to Direct Column mode", "error");
+        return;
+      }
+      state.mapping.bodyTemplate = tpl;
+    } else {
+      if (!colEmailContent.value) {
+        showBanner("Please select an Email Content column", "error");
+        return;
+      }
+      state.mapping.emailContent = colEmailContent.value;
     }
 
     state.mapping.receiverEmail = colReceiverEmail.value;
-    state.mapping.emailSubject = colEmailSubject.value;
-    state.mapping.emailContent = colEmailContent.value;
 
     await saveState();
-    showBanner("Mapping saved!", "success");
+    showBanner("Mapping & templates saved!", "success");
     renderUI();
   });
 
   btnChangeMapping.addEventListener('click', () => {
     state.mapping.receiverEmail = '';
-    state.mapping.emailSubject = '';
-    state.mapping.emailContent = '';
     renderUI();
   });
 
