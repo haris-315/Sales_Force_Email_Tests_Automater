@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Salesforce Email CSV Autofill</title>
+  <link rel="stylesheet" href="popup.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header -->
+    <header class="header">
+      <div class="header-title-row">
+        <div class="logo-badge">SF</div>
+        <div>
+          <h1 class="title">Email CSV Autofill</h1>
+          <p class="subtitle">Salesforce Lightning Email Dispatcher</p>
+        </div>
+      </div>
+    </header>
+
+    <!-- Notification / Status Banner -->
+    <div id="statusBanner" class="status-banner hidden"></div>
+
+    <!-- Step 1: CSV Upload / Paste -->
+    <section class="card" id="stepUpload">
+      <div class="card-header space-between">
+        <div class="flex-align">
+          <span class="step-num">1</span>
+          <h2>Load CSV Data</h2>
+        </div>
+        <div class="tab-toggle">
+          <button id="tabBtnUpload" class="tab-btn active">File</button>
+          <button id="tabBtnPaste" class="tab-btn">Paste</button>
+        </div>
+      </div>
+
+      <!-- Option A: File Dropzone -->
+      <div id="uploadFileSection">
+        <div class="upload-dropzone" id="dropZone">
+          <input type="file" id="csvFileInput" accept=".csv" class="file-input">
+          <div class="upload-icon">📁</div>
+          <div class="upload-text">
+            <span class="upload-primary">Click to select CSV</span> or drag & drop
+          </div>
+          <div class="upload-filename" id="uploadFilename">No file loaded</div>
+        </div>
+      </div>
+
+      <!-- Option B: Raw Text Paste -->
+      <div id="pasteTextSection" class="hidden">
+        <textarea id="csvTextInput" class="csv-textarea" placeholder="Paste your CSV content here (including header row)...&#10;ReceiverEmail,EmailSubject,EmailContent&#10;john@example.com,Hello,How are you?"></textarea>
+        <button id="btnParsePastedCSV" class="btn btn-primary btn-full" style="margin-top: 8px;">
+          Parse Pasted CSV
+        </button>
+      </div>
+    </section>
+
+    <!-- Step 2: Column Mapping -->
+    <section class="card hidden" id="stepMapping">
+      <div class="card-header space-between">
+        <div class="flex-align">
+          <span class="step-num">2</span>
+          <h2>Map CSV Columns</h2>
+        </div>
+        <button id="btnBackToUpload" class="btn btn-outline btn-sm">Change CSV</button>
+      </div>
+
+      <div class="mapping-grid">
+        <div class="form-group">
+          <label for="colReceiverEmail">
+            <span class="required-dot"></span> Receiver Email Field
+          </label>
+          <select id="colReceiverEmail" class="select-input">
+            <option value="">-- Select Column --</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="colEmailSubject">
+            <span class="required-dot"></span> Email Subject Field
+          </label>
+          <select id="colEmailSubject" class="select-input">
+            <option value="">-- Select Column --</option>
+          </select>
+        </div>
+
+        <div class="form-group">
+          <label for="colEmailContent">
+            <span class="required-dot"></span> Email Body Content
+          </label>
+          <select id="colEmailContent" class="select-input">
+            <option value="">-- Select Column --</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="mapping-actions">
+        <button id="btnConfirmMapping" class="btn btn-primary btn-full">
+          Confirm Mapping & Start
+        </button>
+      </div>
+    </section>
+
+    <!-- Step 3: Execution Dashboard -->
+    <section class="card hidden" id="stepDashboard">
+      <div class="card-header space-between">
+        <div class="flex-align">
+          <span class="step-num">3</span>
+          <h2>Dispatcher Progress</h2>
+        </div>
+        <span class="badge" id="rowCounterBadge">Row 0 of 0</span>
+      </div>
+
+      <!-- Progress Bar -->
+      <div class="progress-bar-container">
+        <div class="progress-bar-fill" id="progressBarFill" style="width: 0%;"></div>
+      </div>
+
+      <!-- Row Preview Box -->
+      <div class="preview-box">
+        <div class="preview-item">
+          <span class="preview-label">To:</span>
+          <span class="preview-val" id="prevTo">-</span>
+        </div>
+        <div class="preview-item">
+          <span class="preview-label">Subject:</span>
+          <span class="preview-val" id="prevSubject">-</span>
+        </div>
+        <div class="preview-item col-span">
+          <span class="preview-label">Content:</span>
+          <div class="preview-val content-preview" id="prevContent">-</div>
+        </div>
+      </div>
+
+      <!-- Control Buttons -->
+      <div class="actions-grid">
+        <button id="btnFillOnly" class="btn btn-secondary" title="Fill fields into active Salesforce email dialog">
+          📝 Fill Current
+        </button>
+        <button id="btnFillAndSend" class="btn btn-brand" title="Fill fields and immediately click Send">
+          🚀 Fill & Send
+        </button>
+      </div>
+
+      <!-- Navigation & Utility Buttons -->
+      <div class="nav-controls">
+        <button id="btnPrevRow" class="btn btn-outline btn-sm">⬅️ Prev</button>
+        <button id="btnSkipRow" class="btn btn-outline btn-sm">⏭️ Skip</button>
+        <button id="btnResetProgress" class="btn btn-danger-outline btn-sm">🔄 Reset</button>
+        <button id="btnChangeMapping" class="btn btn-outline btn-sm">⚙️ Re-map</button>
+      </div>
+    </section>
+
+    <!-- Footer -->
+    <footer class="footer">
+      <span>Targeting: Active Salesforce Tab</span>
+      <span id="tabStatusDot" class="status-dot"></span>
+    </footer>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
