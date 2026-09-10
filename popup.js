@@ -845,6 +845,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Loop Controller
   async function runAutoLoop() {
     isLoopRunning = true;
+    state.isLoopRunning = true;
+    await saveState();
+
     btnToggleLoop.textContent = '⏹️ Stop Loop';
     btnToggleLoop.classList.add('running');
     btnFillOnly.disabled = true;
@@ -892,6 +895,9 @@ document.addEventListener('DOMContentLoaded', async () => {
     }
 
     isLoopRunning = false;
+    state.isLoopRunning = false;
+    await saveState();
+
     btnToggleLoop.textContent = '🔁 Start Auto Loop';
     btnToggleLoop.classList.remove('running');
     btnFillOnly.disabled = false;
@@ -1013,9 +1019,12 @@ document.addEventListener('DOMContentLoaded', async () => {
     await saveState();
   });
 
-  btnToggleLoop.addEventListener('click', () => {
+  btnToggleLoop.addEventListener('click', async () => {
     if (isLoopRunning) {
       isLoopRunning = false;
+      state.isLoopRunning = false;
+      await saveState();
+
       btnToggleLoop.textContent = '🔁 Start Auto Loop';
       btnToggleLoop.classList.remove('running');
       showBanner("Auto loop stopped.", 'info');
@@ -1218,4 +1227,13 @@ document.addEventListener('DOMContentLoaded', async () => {
     uploadFilename.textContent = `${state.fileName} (${state.rows.length} rows)`;
   }
   renderUI();
+
+  // Load Aware Auto-Resume Check
+  if (state.isLoopRunning && state.currentRowIndex < state.rows.length) {
+    showBanner("Resuming Auto Loop from saved state...", "info");
+    // Start running immediately, wait a tiny bit for UI to settle
+    setTimeout(() => {
+      runAutoLoop();
+    }, 1000);
+  }
 });
