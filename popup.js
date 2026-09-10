@@ -702,7 +702,13 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   // 2-PHASE DISPATCHER: Strict verification before any send is allowed
   async function executeVerifiedDispatch(payload) {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    let tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    
+    // If the current active tab isn't Salesforce (e.g., if the extension opened as its own tab for hands-free auto-resume), find the Salesforce tab across all windows.
+    if (!tabs || tabs.length === 0 || !(tabs[0].url && (tabs[0].url.includes('force.com') || tabs[0].url.includes('salesforce.com')))) {
+      tabs = await chrome.tabs.query({ url: ["*://*.force.com/*", "*://*.salesforce.com/*", "*://*.my.salesforce.com/*"] });
+    }
+
     if (!tabs || tabs.length === 0) {
       throw new Error("No active Salesforce tab found.");
     }
